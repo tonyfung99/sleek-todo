@@ -6,5 +6,8 @@ module.exports = {
   root: true,
   env: { node: true, jest: true },
   ignorePatterns: ['dist', 'jest.config.ts', 'jest.integration.config.ts', '.eslintrc.cjs'],
-  rules: { '@typescript-eslint/no-explicit-any': 'warn' },
+  rules: {
+    '@typescript-eslint/no-explicit-any': 'warn',
+    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+  },
 };
