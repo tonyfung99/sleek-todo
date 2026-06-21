@@ -1,0 +1,21 @@
+# Assignment brief — keep local, not part of the codebase
+SleekFlow Software Engineer Interview Project.pdf
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
