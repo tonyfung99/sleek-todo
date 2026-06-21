@@ -20,8 +20,11 @@
     "@nestjs/core": "^10.0.0",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/platform-socket.io": "^10.4.22",
     "@nestjs/terminus": "^11.1.1",
     "@nestjs/typeorm": "^11.0.2",
+    "@nestjs/websockets": "^10.4.22",
+    "@socket.io/redis-adapter": "^8.3.0",
     "bcrypt": "^6.0.0",
     "ioredis": "^5.11.1",
     "joi": "^18.2.3",
@@ -30,6 +33,7 @@
     "pino-http": "^11.0.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0",
+    "socket.io": "^4.8.3",
     "typeorm": "^1.0.0"
   },
   "devDependencies": {
