@@ -1,0 +1,23 @@
+# ---- build ----
+FROM node:20-alpine AS build
+RUN corepack enable
+WORKDIR /repo
+COPY pnpm-workspace.yaml package.json ./
+COPY tsconfig.base.json ./
+COPY api/package.json ./api/
+RUN pnpm install --filter @sleek-todo/api... --frozen-lockfile=false
+COPY api ./api
+RUN pnpm --filter @sleek-todo/api build
+
+# ---- runtime ----
+FROM node:20-alpine AS runtime
+RUN corepack enable
+WORKDIR /repo
+ENV NODE_ENV=production
+COPY pnpm-workspace.yaml package.json ./
+COPY api/package.json ./api/
+RUN pnpm install --filter @sleek-todo/api... --prod --frozen-lockfile=false
+COPY --from=build /repo/api/dist ./api/dist
+WORKDIR /repo/api
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
