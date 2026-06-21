@@ -1,5 +1,5 @@
 # ---- build ----
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 RUN corepack enable
 WORKDIR /repo
 COPY pnpm-workspace.yaml package.json ./
@@ -10,7 +10,7 @@ COPY api ./api
 RUN pnpm --filter @sleek-todo/api build
 
 # ---- runtime ----
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 RUN corepack enable
 WORKDIR /repo
 ENV NODE_ENV=production

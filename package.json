@@ -1,7 +1,7 @@
 {
   "name": "sleek-todo",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22" },
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "api:dev": "pnpm --filter api start:dev",

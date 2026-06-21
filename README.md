@@ -3,7 +3,7 @@
 A Notion-style collaborative to-do application.
 
 ## Prerequisites
-- Node 20 (`nvm use`)
+- Node 22 (`nvm use`)
 - pnpm (`corepack enable`)
 - Docker + Docker Compose
 
