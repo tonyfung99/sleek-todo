@@ -1,9 +1,16 @@
-import { Module } from '@nestjs/common';
+import { Module, ValidationPipe } from '@nestjs/common';
+import { APP_PIPE } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { LoggerModule } from 'nestjs-pino';
+import { AuthModule } from './auth/auth.module';
 import { validateEnv } from './config/env.validation';
 import { HealthModule } from './health/health.module';
+import { ListsModule } from './lists/lists.module';
+import { RealtimeModule } from './realtime/realtime.module';
+import { RedisModule } from './redis/redis.module';
+import { TodosModule } from './todos/todos.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -27,7 +34,19 @@ import { HealthModule } from './health/health.module';
         synchronize: false,
       }),
     }),
+    RedisModule,
     HealthModule,
+    UsersModule,
+    AuthModule,
+    ListsModule,
+    TodosModule,
+    RealtimeModule,
+  ],
+  providers: [
+    {
+      provide: APP_PIPE,
+      useValue: new ValidationPipe({ whitelist: true, transform: true }),
+    },
   ],
 })
 export class AppModule {}
