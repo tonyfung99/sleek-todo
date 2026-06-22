@@ -57,6 +57,34 @@ describe('api errors', () => {
       message: 'Session expired',
     });
     expect(unauthorized).toHaveBeenCalledTimes(1);
+    expect(unauthorized).toHaveBeenCalledWith('expired');
+  });
+
+  it('does not notify for a 401 when an empty token sent no authorization header', async () => {
+    const unauthorized = vi.fn();
+    setUnauthorizedHandler(unauthorized);
+    vi.mocked(fetch).mockResolvedValue(response(401, { message: 'Unauthorized' }));
+
+    await expect(api.lists('')).rejects.toMatchObject({ status: 401, kind: 'auth' });
+
+    expect(unauthorized).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]).toMatchObject({
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+
+  it('does not let an old unsubscribe clear a newer unauthorized handler', async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribeFirst = setUnauthorizedHandler(first);
+    setUnauthorizedHandler(second);
+    vi.mocked(fetch).mockResolvedValue(response(401, { message: 'Session expired' }));
+
+    unsubscribeFirst();
+    await expect(api.lists('current-token')).rejects.toMatchObject({ status: 401 });
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith('current-token');
   });
 
   it('keeps a public login 401 local and preserves its domain message', async () => {

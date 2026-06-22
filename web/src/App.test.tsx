@@ -8,7 +8,7 @@ const apiMocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   logout: vi.fn(),
   lists: vi.fn(),
-  unauthorizedHandler: null as (() => void) | null,
+  unauthorizedHandler: null as ((failedToken: string) => void) | null,
 }));
 
 vi.mock('./api', () => ({
@@ -19,8 +19,11 @@ vi.mock('./api', () => ({
     logout: apiMocks.logout,
     lists: apiMocks.lists,
   },
-  setUnauthorizedHandler: (handler: (() => void) | null) => {
+  setUnauthorizedHandler: (handler: ((failedToken: string) => void) | null) => {
     apiMocks.unauthorizedHandler = handler;
+    return () => {
+      if (apiMocks.unauthorizedHandler === handler) apiMocks.unauthorizedHandler = null;
+    };
   },
 }));
 
@@ -54,8 +57,8 @@ async function renderStoredSession() {
   await waitFor(() => expect(apiMocks.unauthorizedHandler).not.toBeNull());
 }
 
-function expireSession() {
-  act(() => apiMocks.unauthorizedHandler?.());
+function expireSession(token = storedSession.accessToken) {
+  act(() => apiMocks.unauthorizedHandler?.(token));
 }
 
 describe('App session recovery', () => {
@@ -99,8 +102,8 @@ describe('App session recovery', () => {
     await renderStoredSession();
 
     act(() => {
-      apiMocks.unauthorizedHandler?.();
-      apiMocks.unauthorizedHandler?.();
+      apiMocks.unauthorizedHandler?.(storedSession.accessToken);
+      apiMocks.unauthorizedHandler?.(storedSession.accessToken);
     });
 
     expect(screen.getAllByRole('alert')).toHaveLength(1);
@@ -126,6 +129,52 @@ describe('App session recovery', () => {
     expect(localStorage.getItem('token')).toBe(newSession.accessToken);
     expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a delayed unauthorized response from the old token after login', async () => {
+    apiMocks.login.mockResolvedValue(newSession);
+    await renderStoredSession();
+    expireSession();
+
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: newSession.user.email },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery staple' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+
+    expireSession(storedSession.accessToken);
+
+    expect(screen.getByRole('heading', { name: 'My lists' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+    expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
+  });
+
+  it('clears the current session when its token receives an unauthorized response', async () => {
+    apiMocks.login.mockResolvedValue(newSession);
+    await renderStoredSession();
+    expireSession();
+
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: newSession.user.email },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery staple' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+
+    expireSession(newSession.accessToken);
+
+    expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Your session expired. Please log in again.',
+    );
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(localStorage.getItem('user')).toBeNull();
   });
 
   it('clears an auth notice on explicit logout even when logout fails', async () => {

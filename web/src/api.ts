@@ -31,10 +31,20 @@ export class ApiError extends Error {
   }
 }
 
-let unauthorizedHandler: (() => void) | null = null;
+type UnauthorizedHandler = (failedToken: string) => void;
 
-export function setUnauthorizedHandler(handler: (() => void) | null): void {
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): () => void;
+export function setUnauthorizedHandler(handler: null): void;
+export function setUnauthorizedHandler(
+  handler: UnauthorizedHandler | null,
+): (() => void) | void {
   unauthorizedHandler = handler;
+  if (!handler) return;
+  return () => {
+    if (unauthorizedHandler === handler) unauthorizedHandler = null;
+  };
 }
 
 function classifyStatus(status: number): ApiErrorKind {
@@ -84,9 +94,9 @@ async function req<T>(path: string, init: RequestInit, token?: string): Promise<
   if (!res.ok) {
     const kind = classifyStatus(res.status);
     const error = new ApiError(responseMessage(body, kind), kind, res.status);
-    if (token !== undefined && res.status === 401) {
+    if (token && res.status === 401) {
       try {
-        unauthorizedHandler?.();
+        unauthorizedHandler?.(token);
       } finally {
         throw error;
       }
