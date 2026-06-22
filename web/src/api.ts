@@ -32,8 +32,11 @@ export class ApiError extends Error {
 }
 
 type UnauthorizedHandler = (failedToken: string) => void;
+type TokenRecoveryHandler = (failedToken: string) => Promise<string | null>;
 
 let unauthorizedHandler: UnauthorizedHandler | null = null;
+let tokenRecoveryHandler: TokenRecoveryHandler | null = null;
+const tokenRecoveries = new Map<string, Promise<string | null>>();
 
 export function setUnauthorizedHandler(handler: UnauthorizedHandler): () => void;
 export function setUnauthorizedHandler(handler: null): void;
@@ -45,6 +48,35 @@ export function setUnauthorizedHandler(
   return () => {
     if (unauthorizedHandler === handler) unauthorizedHandler = null;
   };
+}
+
+export function setTokenRecoveryHandler(handler: TokenRecoveryHandler): () => void;
+export function setTokenRecoveryHandler(handler: null): void;
+export function setTokenRecoveryHandler(
+  handler: TokenRecoveryHandler | null,
+): (() => void) | void {
+  tokenRecoveryHandler = handler;
+  if (!handler) return;
+  return () => {
+    if (tokenRecoveryHandler === handler) tokenRecoveryHandler = null;
+  };
+}
+
+export function recoverAccessToken(failedToken: string): Promise<string | null> {
+  const inFlight = tokenRecoveries.get(failedToken);
+  if (inFlight) return inFlight;
+
+  const handler = tokenRecoveryHandler;
+  const recovery = Promise.resolve()
+    .then(() => handler?.(failedToken) ?? null)
+    .catch(() => null);
+  const trackedRecovery = recovery.finally(() => {
+    if (tokenRecoveries.get(failedToken) === trackedRecovery) {
+      tokenRecoveries.delete(failedToken);
+    }
+  });
+  tokenRecoveries.set(failedToken, trackedRecovery);
+  return trackedRecovery;
 }
 
 function classifyStatus(status: number): ApiErrorKind {
@@ -70,7 +102,12 @@ function responseMessage(body: unknown, kind: ApiErrorKind): string {
   return fallbackMessage(kind);
 }
 
-async function req<T>(path: string, init: RequestInit, token?: string): Promise<T> {
+async function req<T>(
+  path: string,
+  init: RequestInit,
+  token?: string,
+  allowRecovery = true,
+): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),
@@ -95,6 +132,12 @@ async function req<T>(path: string, init: RequestInit, token?: string): Promise<
     const kind = classifyStatus(res.status);
     const error = new ApiError(responseMessage(body, kind), kind, res.status);
     if (token && res.status === 401) {
+      if (allowRecovery) {
+        const replacementToken = await recoverAccessToken(token);
+        if (replacementToken) {
+          return req<T>(path, init, replacementToken, false);
+        }
+      }
       try {
         unauthorizedHandler?.(token);
       } finally {
