@@ -52,7 +52,18 @@ export const api = {
     token: string,
     todoId: string,
     version: number,
-    patch: Partial<Pick<Todo, 'name' | 'description' | 'status' | 'priority' | 'dueDate'>>,
+    patch: Partial<
+      Pick<
+        Todo,
+        | 'name'
+        | 'description'
+        | 'status'
+        | 'priority'
+        | 'dueDate'
+        | 'recurrenceUnit'
+        | 'recurrenceInterval'
+      >
+    >,
   ) =>
     req<Todo>(
       `/todos/${todoId}`,

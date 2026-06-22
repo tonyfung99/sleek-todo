@@ -2,7 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { Socket } from 'socket.io-client';
 import { api } from './api';
 import { createSocket } from './socket';
-import { AuthUser, LockGranted, Todo, TodoList, TodoPriority, TodoStatus, Viewer } from './types';
+import {
+  AuthUser,
+  LockGranted,
+  RecurrenceUnit,
+  Todo,
+  TodoList,
+  TodoPriority,
+  TodoStatus,
+  Viewer,
+} from './types';
 import { BackIcon, LockIcon, PlusIcon, TrashIcon } from './icons';
 
 const STATUSES: TodoStatus[] = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'ARCHIVED'];
@@ -120,7 +129,9 @@ export function ListDetail({
 
   async function patchField(
     todo: Todo,
-    patch: Partial<Pick<Todo, 'status' | 'priority' | 'dueDate'>>,
+    patch: Partial<
+      Pick<Todo, 'status' | 'priority' | 'dueDate' | 'recurrenceUnit' | 'recurrenceInterval'>
+    >,
   ) {
     startEditing(todo.id);
     try {
@@ -295,6 +306,30 @@ export function ListDetail({
                       }
                       aria-label="Due date"
                     />
+
+                    <select
+                      className="select"
+                      value={todo.recurrenceUnit ?? 'NONE'}
+                      disabled={disabled || !todo.dueDate}
+                      title={!todo.dueDate ? 'Set a due date to enable repeat' : 'Repeat'}
+                      onChange={(e) =>
+                        patchField(
+                          todo,
+                          e.target.value === 'NONE'
+                            ? { recurrenceUnit: null, recurrenceInterval: null }
+                            : {
+                                recurrenceUnit: e.target.value as RecurrenceUnit,
+                                recurrenceInterval: 1,
+                              },
+                        )
+                      }
+                      aria-label="Repeat"
+                    >
+                      <option value="NONE">No repeat</option>
+                      <option value="DAY">Daily</option>
+                      <option value="WEEK">Weekly</option>
+                      <option value="MONTH">Monthly</option>
+                    </select>
 
                     {todo.blocked && (
                       <span className="blocked-badge" data-testid={`blocked-${todo.id}`}>

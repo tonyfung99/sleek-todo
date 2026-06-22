@@ -78,10 +78,11 @@ describe('TodosService', () => {
   it('update with a matching version bumps version and emits todo:updated', async () => {
     const { service, emitter } = buildHarness();
     const todo = await service.create('list-1', 'user-1', { name: 'A', description: null });
-    // COMPLETED is not dependency-gated, so it stays on the optimistic (non-tx) path.
-    const updated = await service.update(todo.id, 'user-1', { status: TodoStatus.COMPLETED }, 1);
+    // ARCHIVED stays on the optimistic (non-transaction) path; IN_PROGRESS and
+    // COMPLETED have their own transactional paths covered by integration tests.
+    const updated = await service.update(todo.id, 'user-1', { status: TodoStatus.ARCHIVED }, 1);
     expect(updated.version).toBe(2);
-    expect(updated.status).toBe(TodoStatus.COMPLETED);
+    expect(updated.status).toBe(TodoStatus.ARCHIVED);
     expect(emitter.emitTodoUpdated).toHaveBeenCalledWith('list-1', updated);
   });
 

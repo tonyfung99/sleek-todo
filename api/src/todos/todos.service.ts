@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -13,6 +14,7 @@ import { REALTIME_EMITTER, RealtimeEmitter } from '../realtime/realtime.types';
 import { CreateTodoDto } from './dto/create-todo.dto';
 import { ListTodosQueryDto } from './dto/list-todos-query.dto';
 import { UpdateTodoDto } from './dto/update-todo.dto';
+import { nextDueDate } from './recurrence';
 import { Todo, TodoPriority, TodoStatus } from './todo.entity';
 import { TodoDependency } from './todo-dependency.entity';
 import {
@@ -101,13 +103,21 @@ export class TodosService {
 
   async create(listId: string, userId: string, dto: CreateTodoDto): Promise<Todo> {
     await this.lists.assertCanEdit(listId, userId);
+    const recurrenceUnit = dto.recurrenceUnit ?? null;
+    const recurrenceInterval = recurrenceUnit ? dto.recurrenceInterval ?? 1 : null;
+    const dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+    if (recurrenceUnit && !dueDate) {
+      throw new BadRequestException('Recurring todos require a due date');
+    }
     const todo = await this.todos.save(
       this.todos.create({
         listId,
         name: dto.name,
         description: dto.description ?? null,
-        dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+        dueDate,
         priority: dto.priority ?? TodoPriority.MEDIUM,
+        recurrenceUnit,
+        recurrenceInterval,
         createdById: userId,
       }),
     );
@@ -121,28 +131,11 @@ export class TodosService {
     dto: UpdateTodoDto,
     ifMatchVersion: number,
   ): Promise<Todo> {
-    // Transitioning to IN_PROGRESS is dependency-gated and write-skew-prone, so it
-    // runs under SERIALIZABLE + retry (design spec §9.2 #3). Other edits use the
-    // optimistic version check only.
     if (dto.status === TodoStatus.IN_PROGRESS) {
-      const saved = await runSerializable(this.dataSource, async (m) => {
-        const repo = m.getRepository(Todo);
-        const todo = await repo.findOne({ where: { id: todoId } });
-        if (!todo) throw new NotFoundException('Todo not found');
-        await this.lists.assertCanEdit(todo.listId, userId);
-        if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
-        if (await this.hasUnmetDependencies(m, todoId)) {
-          throw new UnprocessableEntityException(
-            'Blocked: every dependency must be COMPLETED before starting',
-          );
-        }
-        this.applyPatch(todo, dto);
-        todo.status = TodoStatus.IN_PROGRESS;
-        todo.version += 1;
-        return repo.save(todo);
-      });
-      this.emitter.emitTodoUpdated(saved.listId, saved);
-      return saved;
+      return this.startTodo(todoId, userId, dto, ifMatchVersion);
+    }
+    if (dto.status === TodoStatus.COMPLETED) {
+      return this.completeTodo(todoId, userId, dto, ifMatchVersion);
     }
 
     const todo = await this.todos.findOne({ where: { id: todoId } });
@@ -151,10 +144,90 @@ export class TodosService {
     if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
     this.applyPatch(todo, dto);
     if (dto.status !== undefined) todo.status = dto.status;
+    this.normalizeRecurrence(todo);
     todo.version += 1;
     const saved = await this.todos.save(todo);
     this.emitter.emitTodoUpdated(todo.listId, saved);
     return saved;
+  }
+
+  // IN_PROGRESS is dependency-gated and write-skew-prone → SERIALIZABLE + retry (§9.2 #3).
+  private async startTodo(
+    todoId: string,
+    userId: string,
+    dto: UpdateTodoDto,
+    ifMatchVersion: number,
+  ): Promise<Todo> {
+    const saved = await runSerializable(this.dataSource, async (m) => {
+      const repo = m.getRepository(Todo);
+      const todo = await repo.findOne({ where: { id: todoId } });
+      if (!todo) throw new NotFoundException('Todo not found');
+      await this.lists.assertCanEdit(todo.listId, userId);
+      if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
+      if (await this.hasUnmetDependencies(m, todoId)) {
+        throw new UnprocessableEntityException(
+          'Blocked: every dependency must be COMPLETED before starting',
+        );
+      }
+      this.applyPatch(todo, dto);
+      this.normalizeRecurrence(todo);
+      todo.status = TodoStatus.IN_PROGRESS;
+      todo.version += 1;
+      return repo.save(todo);
+    });
+    this.emitter.emitTodoUpdated(saved.listId, saved);
+    return saved;
+  }
+
+  // COMPLETED on a recurring todo spawns the next occurrence. Runs in a
+  // transaction with a row lock; a second concurrent completion re-reads
+  // "already completed" and no-ops, preventing a duplicate occurrence (§9.2 #2).
+  private async completeTodo(
+    todoId: string,
+    userId: string,
+    dto: UpdateTodoDto,
+    ifMatchVersion: number,
+  ): Promise<Todo> {
+    const result = await this.dataSource.transaction(async (m) => {
+      const repo = m.getRepository(Todo);
+      const todo = await m
+        .createQueryBuilder(Todo, 't')
+        .setLock('pessimistic_write')
+        .where('t.id = :id', { id: todoId })
+        .getOne();
+      if (!todo) throw new NotFoundException('Todo not found');
+      await this.lists.assertCanEdit(todo.listId, userId);
+      if (todo.status === TodoStatus.COMPLETED) {
+        return { saved: todo, next: null as Todo | null };
+      }
+      if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
+      this.applyPatch(todo, dto);
+      this.normalizeRecurrence(todo);
+      todo.status = TodoStatus.COMPLETED;
+      todo.completedAt = new Date();
+      todo.version += 1;
+      const saved = await repo.save(todo);
+
+      let next: Todo | null = null;
+      if (saved.recurrenceUnit && saved.recurrenceInterval && saved.dueDate) {
+        next = await repo.save(
+          repo.create({
+            listId: saved.listId,
+            name: saved.name,
+            description: saved.description,
+            dueDate: nextDueDate(saved.dueDate, saved.recurrenceUnit, saved.recurrenceInterval),
+            priority: saved.priority,
+            recurrenceUnit: saved.recurrenceUnit,
+            recurrenceInterval: saved.recurrenceInterval,
+            createdById: userId,
+          }),
+        );
+      }
+      return { saved, next };
+    });
+    this.emitter.emitTodoUpdated(result.saved.listId, result.saved);
+    if (result.next) this.emitter.emitTodoCreated(result.next.listId, result.next);
+    return result.saved;
   }
 
   async softDelete(todoId: string, userId: string): Promise<void> {
@@ -173,6 +246,21 @@ export class TodosService {
     if (dto.description !== undefined) todo.description = dto.description;
     if (dto.priority !== undefined) todo.priority = dto.priority;
     if (dto.dueDate !== undefined) todo.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+    if (dto.recurrenceUnit !== undefined) todo.recurrenceUnit = dto.recurrenceUnit;
+    if (dto.recurrenceInterval !== undefined) todo.recurrenceInterval = dto.recurrenceInterval;
+  }
+
+  // Keep recurrence fields consistent: recurring needs a due date + interval≥1;
+  // non-recurring clears the interval.
+  private normalizeRecurrence(todo: Todo): void {
+    if (todo.recurrenceUnit) {
+      if (!todo.dueDate) {
+        throw new BadRequestException('Recurring todos require a due date');
+      }
+      if (!todo.recurrenceInterval) todo.recurrenceInterval = 1;
+    } else {
+      todo.recurrenceInterval = null;
+    }
   }
 
   private async hasUnmetDependencies(m: EntityManager, todoId: string): Promise<boolean> {

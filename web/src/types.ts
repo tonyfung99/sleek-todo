@@ -2,6 +2,8 @@ export type TodoStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'ARCHIVED
 
 export type TodoPriority = 'LOW' | 'MEDIUM' | 'HIGH';
 
+export type RecurrenceUnit = 'DAY' | 'WEEK' | 'MONTH';
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -27,6 +29,8 @@ export interface Todo {
   dueDate: string | null;
   status: TodoStatus;
   priority: TodoPriority;
+  recurrenceUnit: RecurrenceUnit | null;
+  recurrenceInterval: number | null;
   version: number;
   blocked?: boolean;
 }
