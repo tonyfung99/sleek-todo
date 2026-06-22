@@ -11,6 +11,7 @@ import { ListsService } from '../lists/lists.service';
 import { runSerializable } from '../common/serializable';
 import { REALTIME_EMITTER, RealtimeEmitter } from '../realtime/realtime.types';
 import { wouldCreateCycle } from './dependency-graph';
+import { isBlocked, withBlocked } from './todo-blocked';
 import { Todo, TodoStatus } from './todo.entity';
 import { TodoDependency } from './todo-dependency.entity';
 
@@ -69,8 +70,12 @@ export class DependenciesService {
       return depRepo.save(depRepo.create({ dependentId, dependencyId }));
     });
 
+    // Adding an edge can change the dependent's blocked state → emit it fresh.
     const fresh = await this.todos.findOne({ where: { id: dependentId } });
-    if (fresh) this.emitter.emitTodoUpdated(dependent.listId, fresh);
+    if (fresh) {
+      const blocked = await isBlocked(this.dataSource.manager, fresh.id);
+      this.emitter.emitTodoUpdated(dependent.listId, withBlocked(fresh, blocked));
+    }
     return edge;
   }
 
@@ -79,7 +84,9 @@ export class DependenciesService {
     if (!dependent) throw new NotFoundException('Todo not found');
     await this.lists.assertCanEdit(dependent.listId, userId);
     await this.deps.delete({ dependentId, dependencyId });
-    this.emitter.emitTodoUpdated(dependent.listId, dependent);
+    // Removing an edge can unblock the dependent → emit it fresh.
+    const blocked = await isBlocked(this.dataSource.manager, dependent.id);
+    this.emitter.emitTodoUpdated(dependent.listId, withBlocked(dependent, blocked));
   }
 
   /** Dependencies of `todoId` that are not yet COMPLETED (used by the status gate). */
