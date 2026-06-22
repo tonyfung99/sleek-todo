@@ -37,7 +37,7 @@ export function App() {
   const authGenerationRef = useRef(0);
   const bootstrapAttemptedRef = useRef(false);
   const bootstrapPromiseRef = useRef<Promise<AuthResult> | null>(null);
-  const recoveryInFlightRef = useRef<Promise<string | null> | null>(null);
+  const refreshOperationsRef = useRef(new Set<Promise<AuthResult>>());
   const [openList, setOpenList] = useState<TodoList | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
@@ -55,10 +55,14 @@ export function App() {
   const recoverSession = useCallback((failedToken: string): Promise<string | null> => {
     if (authRef.current?.accessToken !== failedToken) return Promise.resolve(null);
     const generation = authGenerationRef.current;
-    let recovery: Promise<string | null>;
-    recovery = (async () => {
+    return (async () => {
+      let refresh: Promise<AuthResult>;
+      refresh = api.refresh().finally(() => {
+        refreshOperationsRef.current.delete(refresh);
+      });
+      refreshOperationsRef.current.add(refresh);
       try {
-        const result = await api.refresh();
+        const result = await refresh;
         if (
           authGenerationRef.current !== generation ||
           authRef.current?.accessToken !== failedToken
@@ -73,11 +77,7 @@ export function App() {
       } catch {
         return null;
       }
-    })().finally(() => {
-      if (recoveryInFlightRef.current === recovery) recoveryInFlightRef.current = null;
-    });
-    recoveryInFlightRef.current = recovery;
-    return recovery;
+    })();
   }, []);
 
   useEffect(() => {
@@ -94,7 +94,12 @@ export function App() {
     const generation = authGenerationRef.current;
     if (!bootstrapAttemptedRef.current) {
       bootstrapAttemptedRef.current = true;
-      bootstrapPromiseRef.current = api.refresh();
+      let bootstrap: Promise<AuthResult>;
+      bootstrap = api.refresh().finally(() => {
+        refreshOperationsRef.current.delete(bootstrap);
+      });
+      refreshOperationsRef.current.add(bootstrap);
+      bootstrapPromiseRef.current = bootstrap;
     }
     const bootstrap = bootstrapPromiseRef.current;
     if (!bootstrap) return;
@@ -128,7 +133,6 @@ export function App() {
   }
 
   async function handleLogout() {
-    const recovery = recoveryInFlightRef.current;
     authGenerationRef.current += 1;
     clearTokenRecoveryState();
     setAuthNotice(null);
@@ -136,7 +140,8 @@ export function App() {
     clearSession();
     setOpenList(null);
     setAuth(null);
-    await recovery;
+    const refreshes = [...refreshOperationsRef.current];
+    await Promise.allSettled(refreshes);
     try {
       await api.logout();
     } catch {

@@ -353,6 +353,7 @@ describe('App session recovery', () => {
 
     expect(screen.getByRole('heading', { name: 'Create your account' })).toBeTruthy();
     expect(localStorage.getItem('token')).toBeNull();
+    await act(async () => Promise.resolve());
     expect(apiMocks.logout).not.toHaveBeenCalled();
 
     await act(async () => refresh.resolve(newSession));
@@ -364,6 +365,37 @@ describe('App session recovery', () => {
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
     expect(apiMocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for an obsolete bootstrap refresh before logging out a manual session', async () => {
+    const bootstrap = deferredPromise<typeof storedSession>();
+    apiMocks.refresh.mockReturnValue(bootstrap.promise);
+    apiMocks.login.mockResolvedValue(newSession);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: newSession.user.email },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery staple' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+
+    expect(screen.getByRole('heading', { name: 'Create your account' })).toBeTruthy();
+    expect(localStorage.getItem('token')).toBeNull();
+    await act(async () => Promise.resolve());
+    expect(apiMocks.logout).not.toHaveBeenCalled();
+
+    await act(async () => bootstrap.resolve(storedSession));
+    await waitFor(() => expect(apiMocks.logout).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole('heading', { name: 'Create your account' })).toBeTruthy();
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(localStorage.getItem('user')).toBeNull();
   });
 
   it('releases only its own recovery-handler registration on cleanup', async () => {
