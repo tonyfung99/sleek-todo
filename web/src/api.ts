@@ -33,10 +33,22 @@ export class ApiError extends Error {
 
 type UnauthorizedHandler = (failedToken: string) => void;
 type TokenRecoveryHandler = (failedToken: string) => Promise<string | null>;
+type TokenRecoveryRegistration = { handler: TokenRecoveryHandler };
+type TokenRecoveryMetadata = {
+  owner: TokenRecoveryRegistration | null;
+  active: boolean;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+};
+
+const TOKEN_RECOVERY_GRACE_MS = 30_000;
 
 let unauthorizedHandler: UnauthorizedHandler | null = null;
-let tokenRecoveryHandler: TokenRecoveryHandler | null = null;
+let tokenRecoveryRegistration: TokenRecoveryRegistration | null = null;
 const tokenRecoveries = new Map<string, Promise<string | null>>();
+const tokenRecoveryMetadata = new WeakMap<
+  Promise<string | null>,
+  TokenRecoveryMetadata
+>();
 
 export function setUnauthorizedHandler(handler: UnauthorizedHandler): () => void;
 export function setUnauthorizedHandler(handler: null): void;
@@ -55,26 +67,62 @@ export function setTokenRecoveryHandler(handler: null): void;
 export function setTokenRecoveryHandler(
   handler: TokenRecoveryHandler | null,
 ): (() => void) | void {
-  tokenRecoveryHandler = handler;
-  if (!handler) return;
+  const previousRegistration = tokenRecoveryRegistration;
+  tokenRecoveryRegistration = handler ? { handler } : null;
+  if (previousRegistration) clearRecoveryEntries(previousRegistration);
+  if (!tokenRecoveryRegistration) return;
+
+  const registration = tokenRecoveryRegistration;
   return () => {
-    if (tokenRecoveryHandler === handler) tokenRecoveryHandler = null;
+    if (tokenRecoveryRegistration === registration) {
+      tokenRecoveryRegistration = null;
+      clearRecoveryEntries(registration);
+    }
   };
+}
+
+function clearRecoveryEntries(owner?: TokenRecoveryRegistration): void {
+  for (const [failedToken, recovery] of tokenRecoveries) {
+    const metadata = tokenRecoveryMetadata.get(recovery);
+    if (!metadata || (owner && metadata.owner !== owner)) continue;
+    metadata.active = false;
+    if (metadata.expiryTimer) clearTimeout(metadata.expiryTimer);
+    if (tokenRecoveries.get(failedToken) === recovery) tokenRecoveries.delete(failedToken);
+  }
+}
+
+export function clearTokenRecoveryState(): void {
+  // App auth flows call this when a session is replaced, logged out, or terminated.
+  clearRecoveryEntries();
 }
 
 export function recoverAccessToken(failedToken: string): Promise<string | null> {
   const inFlight = tokenRecoveries.get(failedToken);
   if (inFlight) return inFlight;
 
-  const handler = tokenRecoveryHandler;
+  const owner = tokenRecoveryRegistration;
+  const handler = owner?.handler;
   const recovery = Promise.resolve()
     .then(() => handler?.(failedToken) ?? null)
     .catch(() => null);
-  const trackedRecovery = recovery.finally(() => {
-    if (tokenRecoveries.get(failedToken) === trackedRecovery) {
+
+  let metadata: TokenRecoveryMetadata;
+  const trackedRecovery = recovery.then((replacementToken) => {
+    if (!metadata.active || tokenRecoveries.get(failedToken) !== trackedRecovery) return null;
+    if (!replacementToken) {
       tokenRecoveries.delete(failedToken);
+      return null;
     }
+
+    metadata.expiryTimer = setTimeout(() => {
+      if (tokenRecoveries.get(failedToken) === trackedRecovery) {
+        tokenRecoveries.delete(failedToken);
+      }
+    }, TOKEN_RECOVERY_GRACE_MS);
+    return replacementToken;
   });
+  metadata = { owner, active: true };
+  tokenRecoveryMetadata.set(trackedRecovery, metadata);
   tokenRecoveries.set(failedToken, trackedRecovery);
   return trackedRecovery;
 }

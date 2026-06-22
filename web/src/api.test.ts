@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   api,
+  clearTokenRecoveryState,
   recoverAccessToken,
   setTokenRecoveryHandler,
   setUnauthorizedHandler,
@@ -26,6 +27,7 @@ describe('api errors', () => {
   afterEach(() => {
     setUnauthorizedHandler(null);
     setTokenRecoveryHandler(null);
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -115,6 +117,33 @@ describe('api errors', () => {
     ]);
   });
 
+  it('reuses a settled recovery when a concurrent old-token 401 arrives late', async () => {
+    let resolveLateResponse!: (response: Response) => void;
+    const lateResponse = new Promise<Response>((resolve) => {
+      resolveLateResponse = resolve;
+    });
+    const recovery = vi.fn().mockResolvedValue('new-token');
+    setTokenRecoveryHandler(recovery);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(response(401, { message: 'Session expired' }))
+      .mockReturnValueOnce(lateResponse)
+      .mockResolvedValueOnce(response(200, [{ id: 'list-a' }]))
+      .mockResolvedValueOnce(response(200, [{ id: 'list-b' }]));
+
+    const first = api.lists('old-token');
+    const second = api.lists('old-token');
+
+    await expect(first).resolves.toEqual([{ id: 'list-a' }]);
+    resolveLateResponse(response(401, { message: 'Session expired' }));
+    await expect(second).resolves.toEqual([{ id: 'list-b' }]);
+
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(fetch).mock.calls[3]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
+    });
+  });
+
   it('does not recover a replayed 401 and terminal-notifies its replacement token once', async () => {
     const recovery = vi.fn().mockResolvedValue('new-token');
     const unauthorized = vi.fn();
@@ -137,8 +166,16 @@ describe('api errors', () => {
   });
 
   it.each([
-    ['null result', vi.fn().mockResolvedValue(null)],
-    ['rejection', vi.fn().mockRejectedValue(new Error('refresh detail'))],
+    [
+      'null result',
+      vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce('later-token'),
+    ],
+    [
+      'rejection',
+      vi.fn()
+        .mockRejectedValueOnce(new Error('refresh detail'))
+        .mockResolvedValueOnce('later-token'),
+    ],
   ])('terminal-notifies the original token safely when recovery returns a %s', async (_, recovery) => {
     const unauthorized = vi.fn();
     setTokenRecoveryHandler(recovery);
@@ -154,6 +191,8 @@ describe('api errors', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(unauthorized).toHaveBeenCalledTimes(1);
     expect(unauthorized).toHaveBeenCalledWith('old-token');
+    await expect(recoverAccessToken('old-token')).resolves.toBe('later-token');
+    expect(recovery).toHaveBeenCalledTimes(2);
   });
 
   it('does not notify for a 401 when an empty token sent no authorization header', async () => {
@@ -189,11 +228,57 @@ describe('api errors', () => {
     const unsubscribeFirst = setTokenRecoveryHandler(first);
     setTokenRecoveryHandler(second);
 
+    await expect(recoverAccessToken('new-owner-token')).resolves.toBe('second-token');
+
     unsubscribeFirst();
 
-    await expect(recoverAccessToken('old-token')).resolves.toBe('second-token');
+    await expect(recoverAccessToken('new-owner-token')).resolves.toBe('second-token');
     expect(first).not.toHaveBeenCalled();
-    expect(second).toHaveBeenCalledWith('old-token');
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledWith('new-owner-token');
+  });
+
+  it('expires a settled successful recovery after the bounded grace window', async () => {
+    vi.useFakeTimers();
+    const recovery = vi.fn()
+      .mockResolvedValueOnce('new-token')
+      .mockResolvedValueOnce('newer-token');
+    setTokenRecoveryHandler(recovery);
+
+    await expect(recoverAccessToken('old-token')).resolves.toBe('new-token');
+    await expect(recoverAccessToken('old-token')).resolves.toBe('new-token');
+    expect(recovery).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(recoverAccessToken('old-token')).resolves.toBe('newer-token');
+
+    expect(recovery).toHaveBeenCalledTimes(2);
+  });
+
+  it('explicitly clears settled recovery state for a session replacement', async () => {
+    const recovery = vi.fn()
+      .mockResolvedValueOnce('new-token')
+      .mockResolvedValueOnce('replacement-session-token');
+    setTokenRecoveryHandler(recovery);
+
+    await expect(recoverAccessToken('old-token')).resolves.toBe('new-token');
+    clearTokenRecoveryState();
+    await expect(recoverAccessToken('old-token')).resolves.toBe('replacement-session-token');
+
+    expect(recovery).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears recovery state owned by a removed handler registration', async () => {
+    const first = vi.fn().mockResolvedValue('first-token');
+    const unsubscribeFirst = setTokenRecoveryHandler(first);
+    await expect(recoverAccessToken('old-token')).resolves.toBe('first-token');
+
+    unsubscribeFirst();
+    const second = vi.fn().mockResolvedValue('second-token');
+    setTokenRecoveryHandler(second);
+
+    await expect(recoverAccessToken('old-token')).resolves.toBe('second-token');
+    expect(second).toHaveBeenCalledTimes(1);
   });
 
   it.each([
