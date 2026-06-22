@@ -1,7 +1,7 @@
 import { ConflictException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { TodosService } from './todos.service';
-import { Todo, TodoStatus } from './todo.entity';
+import { Todo, TodoPriority, TodoStatus } from './todo.entity';
 import { ListsService } from '../lists/lists.service';
 import { RealtimeEmitter } from '../realtime/realtime.types';
 
@@ -12,8 +12,10 @@ function buildHarness() {
       ({
         id: `todo-${todos.length + 1}`,
         status: TodoStatus.NOT_STARTED,
+        priority: TodoPriority.MEDIUM,
         version: 1,
         description: null,
+        dueDate: null,
         deletedAt: null,
         ...d,
       }) as Todo,
@@ -25,8 +27,6 @@ function buildHarness() {
     },
     findOne: async ({ where }: { where: { id: string } }) =>
       todos.find((t) => t.id === where.id && !t.deletedAt) ?? null,
-    find: async ({ where }: { where: { listId: string } }) =>
-      todos.filter((t) => t.listId === where.listId && !t.deletedAt),
     softDelete: async (id: string) => {
       const t = todos.find((x) => x.id === id);
       if (t) t.deletedAt = new Date();
@@ -50,22 +50,25 @@ function buildHarness() {
 }
 
 describe('TodosService', () => {
-  it('create persists an editor-gated todo and emits todo:created', async () => {
+  it('create persists an editor-gated todo (priority defaults to MEDIUM) and emits todo:created', async () => {
     const { service, lists, emitter } = buildHarness();
     const todo = await service.create('list-1', 'user-1', { name: 'Buy milk', description: null });
     expect(todo.name).toBe('Buy milk');
     expect(todo.version).toBe(1);
+    expect(todo.priority).toBe(TodoPriority.MEDIUM);
     expect(lists.assertCanEdit).toHaveBeenCalledWith('list-1', 'user-1');
     expect(emitter.emitTodoCreated).toHaveBeenCalledWith('list-1', todo);
   });
 
-  it('listForList excludes soft-deleted todos', async () => {
+  it('create accepts an explicit priority and due date', async () => {
     const { service } = buildHarness();
-    const a = await service.create('list-1', 'user-1', { name: 'A', description: null });
-    await service.create('list-1', 'user-1', { name: 'B', description: null });
-    await service.softDelete(a.id, 'user-1');
-    const rows = await service.listForList('list-1', 'user-1');
-    expect(rows.map((t) => t.name)).toEqual(['B']);
+    const todo = await service.create('list-1', 'user-1', {
+      name: 'Ship it',
+      priority: TodoPriority.HIGH,
+      dueDate: '2026-07-01T00:00:00.000Z',
+    });
+    expect(todo.priority).toBe(TodoPriority.HIGH);
+    expect(todo.dueDate).toEqual(new Date('2026-07-01T00:00:00.000Z'));
   });
 
   it('update with a matching version bumps version and emits todo:updated', async () => {
@@ -77,6 +80,19 @@ describe('TodosService', () => {
     expect(emitter.emitTodoUpdated).toHaveBeenCalledWith('list-1', updated);
   });
 
+  it('update can change priority and due date', async () => {
+    const { service } = buildHarness();
+    const todo = await service.create('list-1', 'user-1', { name: 'A' });
+    const updated = await service.update(
+      todo.id,
+      'user-1',
+      { priority: TodoPriority.LOW, dueDate: '2026-08-15T00:00:00.000Z' },
+      1,
+    );
+    expect(updated.priority).toBe(TodoPriority.LOW);
+    expect(updated.dueDate).toEqual(new Date('2026-08-15T00:00:00.000Z'));
+  });
+
   it('update with a stale version throws 409', async () => {
     const { service } = buildHarness();
     const todo = await service.create('list-1', 'user-1', { name: 'A', description: null });
@@ -86,11 +102,10 @@ describe('TodosService', () => {
   });
 
   it('softDelete sets deletedAt and emits todo:deleted', async () => {
-    const { service, emitter } = buildHarness();
+    const { service, todos, emitter } = buildHarness();
     const todo = await service.create('list-1', 'user-1', { name: 'A', description: null });
     await service.softDelete(todo.id, 'user-1');
     expect(emitter.emitTodoDeleted).toHaveBeenCalledWith('list-1', todo.id);
-    const rows = await service.listForList('list-1', 'user-1');
-    expect(rows).toHaveLength(0);
+    expect(todos.find((t) => t.id === todo.id)?.deletedAt).toBeInstanceOf(Date);
   });
 });

@@ -1,5 +1,5 @@
-import { IsEnum, IsOptional, IsString } from 'class-validator';
-import { TodoStatus } from '../todo.entity';
+import { IsEnum, IsISO8601, IsOptional, IsString } from 'class-validator';
+import { TodoPriority, TodoStatus } from '../todo.entity';
 
 export class UpdateTodoDto {
   @IsOptional()
@@ -13,4 +13,12 @@ export class UpdateTodoDto {
   @IsOptional()
   @IsEnum(TodoStatus)
   status?: TodoStatus;
+
+  @IsOptional()
+  @IsEnum(TodoPriority)
+  priority?: TodoPriority;
+
+  @IsOptional()
+  @IsISO8601()
+  dueDate?: string | null;
 }

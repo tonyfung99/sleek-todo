@@ -2,15 +2,26 @@ import { useEffect, useRef, useState } from 'react';
 import { Socket } from 'socket.io-client';
 import { api } from './api';
 import { createSocket } from './socket';
-import { AuthUser, LockGranted, Todo, TodoList, TodoStatus, Viewer } from './types';
+import { AuthUser, LockGranted, Todo, TodoList, TodoPriority, TodoStatus, Viewer } from './types';
 import { BackIcon, LockIcon, PlusIcon, TrashIcon } from './icons';
 
-const STATUSES: TodoStatus[] = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED'];
+const STATUSES: TodoStatus[] = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'ARCHIVED'];
 const STATUS_LABEL: Record<TodoStatus, string> = {
   NOT_STARTED: 'Not started',
   IN_PROGRESS: 'In progress',
   COMPLETED: 'Completed',
+  ARCHIVED: 'Archived',
 };
+const PRIORITIES: TodoPriority[] = ['LOW', 'MEDIUM', 'HIGH'];
+const PRIORITY_LABEL: Record<TodoPriority, string> = {
+  LOW: 'Low',
+  MEDIUM: 'Medium',
+  HIGH: 'High',
+};
+
+function toDateInput(iso: string | null): string {
+  return iso ? iso.slice(0, 10) : '';
+}
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -34,6 +45,7 @@ export function ListDetail({
   const [viewers, setViewers] = useState<Viewer[]>([]);
   const [locks, setLocks] = useState<Record<string, LockGranted>>({});
   const [newName, setNewName] = useState('');
+  const [newPriority, setNewPriority] = useState<TodoPriority>('MEDIUM');
   const socketRef = useRef<Socket | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -75,9 +87,10 @@ export function ListDetail({
 
   async function createTodo() {
     if (!newName.trim()) return;
-    const todo = await api.createTodo(token, list.id, newName.trim());
+    const todo = await api.createTodo(token, list.id, newName.trim(), { priority: newPriority });
     setTodos((prev) => (prev.some((t) => t.id === todo.id) ? prev : [...prev, todo]));
     setNewName('');
+    setNewPriority('MEDIUM');
   }
 
   function startEditing(todoId: string) {
@@ -102,10 +115,13 @@ export function ListDetail({
     }, 400);
   }
 
-  async function changeStatus(todo: Todo, status: TodoStatus) {
+  async function patchField(
+    todo: Todo,
+    patch: Partial<Pick<Todo, 'status' | 'priority' | 'dueDate'>>,
+  ) {
     startEditing(todo.id);
     try {
-      const saved = await api.updateTodo(token, todo.id, todo.version, { status });
+      const saved = await api.updateTodo(token, todo.id, todo.version, patch);
       setTodos((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
     } catch {
       api.todos(token, list.id).then(setTodos);
@@ -159,6 +175,18 @@ export function ListDetail({
             }}
             aria-label="New todo name"
           />
+          <select
+            className={`select priority-${newPriority}`}
+            value={newPriority}
+            onChange={(e) => setNewPriority(e.target.value as TodoPriority)}
+            aria-label="New todo priority"
+          >
+            {PRIORITIES.map((p) => (
+              <option key={p} value={p}>
+                {PRIORITY_LABEL[p]}
+              </option>
+            ))}
+          </select>
           <button className="btn btn-primary" onClick={createTodo} disabled={!newName.trim()}>
             <PlusIcon size={16} />
             Add
@@ -189,7 +217,7 @@ export function ListDetail({
                       className={`select status-${todo.status}`}
                       value={todo.status}
                       disabled={disabled}
-                      onChange={(e) => changeStatus(todo, e.target.value as TodoStatus)}
+                      onChange={(e) => patchField(todo, { status: e.target.value as TodoStatus })}
                       aria-label="Status"
                     >
                       {STATUSES.map((s) => (
@@ -198,6 +226,37 @@ export function ListDetail({
                         </option>
                       ))}
                     </select>
+
+                    <select
+                      className={`select priority-${todo.priority}`}
+                      value={todo.priority}
+                      disabled={disabled}
+                      onChange={(e) =>
+                        patchField(todo, { priority: e.target.value as TodoPriority })
+                      }
+                      aria-label="Priority"
+                    >
+                      {PRIORITIES.map((p) => (
+                        <option key={p} value={p}>
+                          {PRIORITY_LABEL[p]}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      type="date"
+                      className="input date-input"
+                      value={toDateInput(todo.dueDate)}
+                      disabled={disabled}
+                      onChange={(e) =>
+                        patchField(todo, {
+                          dueDate: e.target.value
+                            ? new Date(e.target.value).toISOString()
+                            : null,
+                        })
+                      }
+                      aria-label="Due date"
+                    />
 
                     {lock && (
                       <span className="lock-badge" data-testid={`lock-badge-${todo.id}`}>

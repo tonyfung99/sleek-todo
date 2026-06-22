@@ -1,4 +1,4 @@
-import { AuthResult, Todo, TodoList } from './types';
+import { AuthResult, Todo, TodoList, TodoPage, TodoPriority } from './types';
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
@@ -33,19 +33,26 @@ export const api = {
   lists: (token: string) => req<TodoList[]>('/lists', { method: 'GET' }, token),
   createList: (token: string, name: string) =>
     req<TodoList>('/lists', { method: 'POST', body: JSON.stringify({ name }) }, token),
-  todos: (token: string, listId: string) =>
-    req<Todo[]>(`/lists/${listId}/todos`, { method: 'GET' }, token),
-  createTodo: (token: string, listId: string, name: string) =>
+  todos: (token: string, listId: string, queryString = '') =>
+    req<TodoPage>(`/lists/${listId}/todos${queryString}`, { method: 'GET' }, token).then(
+      (page) => page.items,
+    ),
+  createTodo: (
+    token: string,
+    listId: string,
+    name: string,
+    extra: { priority?: TodoPriority; dueDate?: string | null } = {},
+  ) =>
     req<Todo>(
       `/lists/${listId}/todos`,
-      { method: 'POST', body: JSON.stringify({ name, description: null }) },
+      { method: 'POST', body: JSON.stringify({ name, description: null, ...extra }) },
       token,
     ),
   updateTodo: (
     token: string,
     todoId: string,
     version: number,
-    patch: Partial<Pick<Todo, 'name' | 'description' | 'status'>>,
+    patch: Partial<Pick<Todo, 'name' | 'description' | 'status' | 'priority' | 'dueDate'>>,
   ) =>
     req<Todo>(
       `/todos/${todoId}`,

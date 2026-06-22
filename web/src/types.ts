@@ -1,4 +1,6 @@
-export type TodoStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED';
+export type TodoStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'ARCHIVED';
+
+export type TodoPriority = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export interface AuthUser {
   id: string;
@@ -22,8 +24,15 @@ export interface Todo {
   listId: string;
   name: string;
   description: string | null;
+  dueDate: string | null;
   status: TodoStatus;
+  priority: TodoPriority;
   version: number;
+}
+
+export interface TodoPage {
+  items: Todo[];
+  nextCursor: string | null;
 }
 
 export interface Viewer {

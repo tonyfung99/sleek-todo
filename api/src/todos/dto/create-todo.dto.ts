@@ -1,4 +1,5 @@
-import { IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEnum, IsISO8601, IsOptional, IsString, MinLength } from 'class-validator';
+import { TodoPriority } from '../todo.entity';
 
 export class CreateTodoDto {
   @IsString()
@@ -8,4 +9,12 @@ export class CreateTodoDto {
   @IsOptional()
   @IsString()
   description?: string | null;
+
+  @IsOptional()
+  @IsISO8601()
+  dueDate?: string | null;
+
+  @IsOptional()
+  @IsEnum(TodoPriority)
+  priority?: TodoPriority;
 }
