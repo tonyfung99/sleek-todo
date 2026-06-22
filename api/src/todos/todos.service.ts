@@ -7,7 +7,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { ListsService } from '../lists/lists.service';
 import { runSerializable } from '../common/serializable';
 import { REALTIME_EMITTER, RealtimeEmitter } from '../realtime/realtime.types';
@@ -15,8 +15,8 @@ import { CreateTodoDto } from './dto/create-todo.dto';
 import { ListTodosQueryDto } from './dto/list-todos-query.dto';
 import { UpdateTodoDto } from './dto/update-todo.dto';
 import { nextDueDate } from './recurrence';
+import { dependentIdsOf, isBlocked, withBlocked } from './todo-blocked';
 import { Todo, TodoPriority, TodoStatus } from './todo.entity';
-import { TodoDependency } from './todo-dependency.entity';
 import {
   SORT_CONFIG,
   decodeCursor,
@@ -121,7 +121,8 @@ export class TodosService {
         createdById: userId,
       }),
     );
-    this.emitter.emitTodoCreated(listId, todo);
+    // A brand-new todo has no dependencies yet → not blocked.
+    this.emitter.emitTodoCreated(listId, withBlocked(todo, false));
     return todo;
   }
 
@@ -147,7 +148,7 @@ export class TodosService {
     this.normalizeRecurrence(todo);
     todo.version += 1;
     const saved = await this.todos.save(todo);
-    this.emitter.emitTodoUpdated(todo.listId, saved);
+    await this.emitUpdated(saved);
     return saved;
   }
 
@@ -164,7 +165,7 @@ export class TodosService {
       if (!todo) throw new NotFoundException('Todo not found');
       await this.lists.assertCanEdit(todo.listId, userId);
       if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
-      if (await this.hasUnmetDependencies(m, todoId)) {
+      if (await isBlocked(m, todoId)) {
         throw new UnprocessableEntityException(
           'Blocked: every dependency must be COMPLETED before starting',
         );
@@ -175,7 +176,7 @@ export class TodosService {
       todo.version += 1;
       return repo.save(todo);
     });
-    this.emitter.emitTodoUpdated(saved.listId, saved);
+    await this.emitUpdated(saved);
     return saved;
   }
 
@@ -225,8 +226,8 @@ export class TodosService {
       }
       return { saved, next };
     });
-    this.emitter.emitTodoUpdated(result.saved.listId, result.saved);
-    if (result.next) this.emitter.emitTodoCreated(result.next.listId, result.next);
+    await this.emitUpdated(result.saved);
+    if (result.next) this.emitter.emitTodoCreated(result.next.listId, withBlocked(result.next, false));
     return result.saved;
   }
 
@@ -235,9 +236,31 @@ export class TodosService {
     if (!todo) {
       throw new NotFoundException('Todo not found');
     }
+    // Capture dependents BEFORE deleting so we can refresh their blocked state.
+    const dependents = await dependentIdsOf(this.dataSource.manager, todo.id);
     await this.lists.assertCanEdit(todo.listId, userId);
     await this.todos.softDelete(todo.id);
     this.emitter.emitTodoDeleted(todo.listId, todo.id);
+    await this.emitTodosById(dependents);
+  }
+
+  // Emit a todo:updated carrying a fresh `blocked` flag, then refresh the
+  // blocked state of every todo that depends on it (its status change may have
+  // flipped their blocked state). Keeps dependency badges live without a refetch.
+  private async emitUpdated(todo: Todo): Promise<void> {
+    const blocked = await isBlocked(this.dataSource.manager, todo.id);
+    this.emitter.emitTodoUpdated(todo.listId, withBlocked(todo, blocked));
+    const dependents = await dependentIdsOf(this.dataSource.manager, todo.id);
+    await this.emitTodosById(dependents);
+  }
+
+  private async emitTodosById(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const dep = await this.todos.findOne({ where: { id } });
+      if (!dep) continue;
+      const blocked = await isBlocked(this.dataSource.manager, dep.id);
+      this.emitter.emitTodoUpdated(dep.listId, withBlocked(dep, blocked));
+    }
   }
 
   // Applies non-status scalar fields from the DTO (status handled by callers).
@@ -261,18 +284,5 @@ export class TodosService {
     } else {
       todo.recurrenceInterval = null;
     }
-  }
-
-  private async hasUnmetDependencies(m: EntityManager, todoId: string): Promise<boolean> {
-    const row = await m
-      .createQueryBuilder()
-      .select('COUNT(*)', 'c')
-      .from(TodoDependency, 'd')
-      .innerJoin(Todo, 't', 't.id = d.dependencyId')
-      .where('d.dependentId = :id', { id: todoId })
-      .andWhere('t.status <> :completed', { completed: TodoStatus.COMPLETED })
-      .andWhere('t.deletedAt IS NULL')
-      .getRawOne<{ c: string }>();
-    return Number.parseInt(row?.c ?? '0', 10) > 0;
   }
 }

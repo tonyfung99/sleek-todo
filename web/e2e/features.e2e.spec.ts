@@ -53,21 +53,28 @@ test('dependencies block, recurrence spawns next occurrence, logout works', asyn
   await expect(page.getByTestId(`todo-name-${taskId}`)).toHaveValue('Deploy release');
   await expect(page.getByTestId(`todo-name-${prereqId}`)).toHaveValue('Run QA');
 
+  // --- Description (#4): add a description on Deploy ---
+  await page.getByTestId(`todo-desc-${taskId}`).fill('Push to prod and announce');
+  await expect(page.getByTestId(`todo-desc-${taskId}`)).toHaveValue('Push to prod and announce');
+
   // --- Dependencies: make Deploy depend on QA → Deploy shows Blocked ---
   const taskRow = page.getByTestId(`todo-row-${taskId}`);
   await taskRow.getByRole('button', { name: 'Deps' }).click();
   await taskRow.getByLabel('Add dependency').selectOption({ label: 'Run QA' });
   await expect(page.getByTestId(`blocked-${taskId}`)).toBeVisible();
 
-  // Two rows so far (Deploy, QA). QA already shows its Daily repeat.
+  // Two rows so far (Deploy, QA). QA's Daily repeat shows in its Deps panel.
   await expect(page.locator('[data-testid^="todo-row-"]')).toHaveCount(2);
-  await expect(page.getByTestId(`todo-row-${prereqId}`).getByLabel('Repeat')).toHaveValue('DAY');
+  const prereqRow = page.getByTestId(`todo-row-${prereqId}`);
+  await prereqRow.getByRole('button', { name: 'Deps' }).click();
+  await expect(prereqRow.getByLabel('Repeat')).toHaveValue('DAY');
 
-  // --- Recurrence: complete the recurring QA → a fresh NOT_STARTED occurrence is spawned ---
-  await page.getByTestId(`todo-row-${prereqId}`).getByLabel('Status').selectOption('COMPLETED');
-
-  // Original QA is COMPLETED and the next occurrence appears → 3 rows.
+  // --- Fast complete (#1) via the checkbox → recurring QA spawns the next occurrence ---
+  await page.getByTestId(`todo-check-${prereqId}`).click();
   await expect(page.locator('[data-testid^="todo-row-"]')).toHaveCount(3);
+
+  // --- Live unblock (#2): completing QA clears Deploy's Blocked badge with no refresh ---
+  await expect(page.getByTestId(`blocked-${taskId}`)).toHaveCount(0);
 
   // --- Logout (from the Lists screen) returns to the auth screen ---
   await page.getByRole('button', { name: 'Lists' }).click();

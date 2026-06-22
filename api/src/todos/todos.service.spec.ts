@@ -46,8 +46,20 @@ function buildHarness() {
   };
 
   // These unit tests exercise non-IN_PROGRESS paths only, so the SERIALIZABLE
-  // transaction (which needs a real DataSource) is never entered.
-  const dataSource = {} as unknown as DataSource;
+  // transaction is never entered. The emit helpers query `manager` for the
+  // blocked flag + dependents; stub it to report "no dependencies, no dependents".
+  const manager = {
+    createQueryBuilder: () => ({
+      select: () => manager.createQueryBuilder(),
+      from: () => manager.createQueryBuilder(),
+      innerJoin: () => manager.createQueryBuilder(),
+      where: () => manager.createQueryBuilder(),
+      andWhere: () => manager.createQueryBuilder(),
+      getRawOne: async () => ({ c: '0' }),
+    }),
+    getRepository: () => ({ find: async () => [] }),
+  };
+  const dataSource = { manager } as unknown as DataSource;
 
   const service = new TodosService(repo, dataSource, lists, emitter);
   return { service, todos, lists, emitter };
