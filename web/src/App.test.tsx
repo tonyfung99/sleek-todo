@@ -34,6 +34,14 @@ const newSession = {
   user: { id: 'user-2', email: 'grace@example.com', displayName: 'Grace' },
 };
 
+function deferredPromise<T>() {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((_, rejectPromise) => {
+    reject = rejectPromise;
+  });
+  return { promise, reject };
+}
+
 function storeSession() {
   localStorage.setItem('token', storedSession.accessToken);
   localStorage.setItem('user', JSON.stringify(storedSession.user));
@@ -67,14 +75,22 @@ describe('App session recovery', () => {
   });
 
   it('clears stored auth and returns an expired session to login with an alert', async () => {
+    const refresh = deferredPromise<never>();
+    apiMocks.refresh.mockReturnValue(refresh.promise);
     await renderStoredSession();
 
     expireSession();
 
+    await waitFor(() => expect(apiMocks.refresh).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      refresh.reject(new Error('no refresh session'));
+      await refresh.promise.catch(() => undefined);
+    });
+
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeTruthy();
-    expect(screen.getByRole('alert').textContent).toContain(
+    expect(screen.getByRole('alert').textContent).toBe(
       'Your session expired. Please log in again.',
     );
   });
