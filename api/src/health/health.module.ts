@@ -1,21 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TerminusModule } from '@nestjs/terminus';
-import Redis from 'ioredis';
+import { RedisModule } from '../redis/redis.module';
 import { HealthController } from './health.controller';
-import { RedisHealthIndicator, REDIS_CLIENT } from './redis.health';
+import { RedisHealthIndicator } from './redis.health';
 
 @Module({
-  imports: [TerminusModule, ConfigModule],
+  imports: [TerminusModule, RedisModule],
   controllers: [HealthController],
-  providers: [
-    RedisHealthIndicator,
-    {
-      provide: REDIS_CLIENT,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) =>
-        new Redis(config.getOrThrow<string>('REDIS_URL'), { maxRetriesPerRequest: 1 }),
-    },
-  ],
+  providers: [RedisHealthIndicator],
 })
 export class HealthModule {}

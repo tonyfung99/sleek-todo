@@ -5,6 +5,8 @@ export interface AppEnv {
   PORT: number;
   DATABASE_URL: string;
   REDIS_URL: string;
+  JWT_SECRET: string;
+  CORS_ORIGIN: string;
 }
 
 const schema = Joi.object<AppEnv>({
@@ -12,6 +14,8 @@ const schema = Joi.object<AppEnv>({
   PORT: Joi.number().default(3000),
   DATABASE_URL: Joi.string().uri({ scheme: ['postgres', 'postgresql'] }).required(),
   REDIS_URL: Joi.string().uri({ scheme: ['redis', 'rediss'] }).required(),
+  JWT_SECRET: Joi.string().min(16).required(),
+  CORS_ORIGIN: Joi.string().uri().default('http://localhost:5173'),
 });
 
 export function validateEnv(config: Record<string, unknown>): AppEnv {
