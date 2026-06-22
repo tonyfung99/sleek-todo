@@ -26,6 +26,29 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sleek
+          POSTGRES_PASSWORD: sleek
+          POSTGRES_DB: sleektodo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sleek -d sleektodo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,7 +60,11 @@ jobs:
       - run: pnpm --filter @sleek-todo/api build
       - run: pnpm --filter web build
       - run: pnpm --filter web exec playwright install --with-deps chromium
-      # global-setup brings up postgres + redis via docker compose and runs migrations.
+      # Service containers (above) provide Postgres + Redis; run migrations against them.
+      - run: pnpm --filter @sleek-todo/api migration:run
+        env:
+          DATABASE_URL: postgres://sleek:sleek@localhost:5432/sleektodo
+      # global-setup is a no-op under CI; Playwright starts the API + Vite servers.
       - run: pnpm --filter web e2e
         env:
           CI: 'true'
