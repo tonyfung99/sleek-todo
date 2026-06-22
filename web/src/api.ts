@@ -10,20 +10,189 @@ import {
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
-async function req<T>(path: string, init: RequestInit, token?: string): Promise<T> {
+export type ApiErrorKind =
+  | 'auth'
+  | 'validation'
+  | 'permission'
+  | 'not-found'
+  | 'conflict'
+  | 'network'
+  | 'unexpected';
+
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  readonly status?: number;
+
+  constructor(message: string, kind: ApiErrorKind, status?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
+type UnauthorizedHandler = (failedToken: string) => void;
+type TokenRecoveryHandler = (failedToken: string) => Promise<string | null>;
+type TokenRecoveryRegistration = { handler: TokenRecoveryHandler };
+type TokenRecoveryMetadata = {
+  owner: TokenRecoveryRegistration | null;
+  active: boolean;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+};
+
+const TOKEN_RECOVERY_GRACE_MS = 30_000;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+let tokenRecoveryRegistration: TokenRecoveryRegistration | null = null;
+const tokenRecoveries = new Map<string, Promise<string | null>>();
+const tokenRecoveryMetadata = new WeakMap<
+  Promise<string | null>,
+  TokenRecoveryMetadata
+>();
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): () => void;
+export function setUnauthorizedHandler(handler: null): void;
+export function setUnauthorizedHandler(
+  handler: UnauthorizedHandler | null,
+): (() => void) | void {
+  unauthorizedHandler = handler;
+  if (!handler) return;
+  return () => {
+    if (unauthorizedHandler === handler) unauthorizedHandler = null;
+  };
+}
+
+export function setTokenRecoveryHandler(handler: TokenRecoveryHandler): () => void;
+export function setTokenRecoveryHandler(handler: null): void;
+export function setTokenRecoveryHandler(
+  handler: TokenRecoveryHandler | null,
+): (() => void) | void {
+  const previousRegistration = tokenRecoveryRegistration;
+  tokenRecoveryRegistration = handler ? { handler } : null;
+  if (previousRegistration) clearRecoveryEntries(previousRegistration);
+  if (!tokenRecoveryRegistration) return;
+
+  const registration = tokenRecoveryRegistration;
+  return () => {
+    if (tokenRecoveryRegistration === registration) {
+      tokenRecoveryRegistration = null;
+      clearRecoveryEntries(registration);
+    }
+  };
+}
+
+function clearRecoveryEntries(owner?: TokenRecoveryRegistration): void {
+  for (const [failedToken, recovery] of tokenRecoveries) {
+    const metadata = tokenRecoveryMetadata.get(recovery);
+    if (!metadata || (owner && metadata.owner !== owner)) continue;
+    metadata.active = false;
+    if (metadata.expiryTimer) clearTimeout(metadata.expiryTimer);
+    if (tokenRecoveries.get(failedToken) === recovery) tokenRecoveries.delete(failedToken);
+  }
+}
+
+export function clearTokenRecoveryState(): void {
+  // App auth flows call this when a session is replaced, logged out, or terminated.
+  clearRecoveryEntries();
+}
+
+export function recoverAccessToken(failedToken: string): Promise<string | null> {
+  const inFlight = tokenRecoveries.get(failedToken);
+  if (inFlight) return inFlight;
+
+  const owner = tokenRecoveryRegistration;
+  const handler = owner?.handler;
+  const recovery = Promise.resolve()
+    .then(() => handler?.(failedToken) ?? null)
+    .catch(() => null);
+
+  let metadata: TokenRecoveryMetadata;
+  const trackedRecovery = recovery.then((replacementToken) => {
+    if (!metadata.active || tokenRecoveries.get(failedToken) !== trackedRecovery) return null;
+    if (!replacementToken) {
+      tokenRecoveries.delete(failedToken);
+      return null;
+    }
+
+    metadata.expiryTimer = setTimeout(() => {
+      if (tokenRecoveries.get(failedToken) === trackedRecovery) {
+        tokenRecoveries.delete(failedToken);
+      }
+    }, TOKEN_RECOVERY_GRACE_MS);
+    return replacementToken;
+  });
+  metadata = { owner, active: true };
+  tokenRecoveryMetadata.set(trackedRecovery, metadata);
+  tokenRecoveries.set(failedToken, trackedRecovery);
+  return trackedRecovery;
+}
+
+function classifyStatus(status: number): ApiErrorKind {
+  if (status === 401) return 'auth';
+  if (status === 403) return 'permission';
+  if (status === 404) return 'not-found';
+  if (status === 409) return 'conflict';
+  if (status === 400 || status === 422) return 'validation';
+  return 'unexpected';
+}
+
+function fallbackMessage(kind: ApiErrorKind): string {
+  if (kind === 'permission') return "You don't have permission to do that.";
+  if (kind === 'not-found') return 'That item is no longer available.';
+  return 'Something went wrong. Please try again.';
+}
+
+function responseMessage(body: unknown, kind: ApiErrorKind): string {
+  if (kind !== 'unexpected' && typeof body === 'object' && body !== null) {
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim().length > 0) return message;
+  }
+  return fallbackMessage(kind);
+}
+
+async function req<T>(
+  path: string,
+  init: RequestInit,
+  token?: string,
+  allowRecovery = true,
+): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   // credentials:'include' so the httpOnly refresh cookie round-trips.
-  const res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new ApiError(
+        "Couldn't connect. Check your connection and try again.",
+        'network',
+      );
+    }
+    throw new ApiError('Something went wrong. Please try again.', 'unexpected');
+  }
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw Object.assign(new Error((body as { message?: string }).message ?? res.statusText), {
-      status: res.status,
-    });
+    const kind = classifyStatus(res.status);
+    const error = new ApiError(responseMessage(body, kind), kind, res.status);
+    if (token && res.status === 401) {
+      if (allowRecovery) {
+        const replacementToken = await recoverAccessToken(token);
+        if (replacementToken) {
+          return req<T>(path, init, replacementToken, false);
+        }
+      }
+      try {
+        unauthorizedHandler?.(token);
+      } finally {
+        throw error;
+      }
+    }
+    throw error;
   }
   return body as T;
 }

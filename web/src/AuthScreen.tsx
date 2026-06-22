@@ -1,15 +1,30 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { api } from './api';
+import { ErrorAlert } from './ErrorAlert';
 import { AuthResult } from './types';
 import { CheckIcon } from './icons';
 
-export function AuthScreen({ onAuth }: { onAuth: (r: AuthResult) => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('register');
+type AuthScreenProps = {
+  onAuth: (result: AuthResult) => void;
+  initialMode?: 'login' | 'register';
+  initialError?: string | null;
+};
+
+export function AuthScreen({
+  onAuth,
+  initialMode,
+  initialError,
+}: AuthScreenProps) {
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode ?? 'register');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError ?? null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setError(initialError ?? null);
+  }, [initialError]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -93,11 +108,7 @@ export function AuthScreen({ onAuth }: { onAuth: (r: AuthResult) => void }) {
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Log in'}
           </button>
-          {error && (
-            <p className="error-text" role="alert">
-              {error}
-            </p>
-          )}
+          {error && <ErrorAlert message={error} compact />}
         </form>
 
         <p className="muted-row" style={{ marginTop: 18 }}>

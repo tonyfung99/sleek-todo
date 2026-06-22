@@ -13,6 +13,7 @@ import {
   Viewer,
 } from './types';
 import { BackIcon, CheckIcon, LockIcon, PlusIcon, TrashIcon } from './icons';
+import { ErrorAlert } from './ErrorAlert';
 
 const STATUSES: TodoStatus[] = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'ARCHIVED'];
 const STATUS_LABEL: Record<TodoStatus, string> = {
@@ -49,13 +50,21 @@ export function ListDetail({
   me,
   list,
   onBack,
+  onUnauthorized,
 }: {
   token: string;
   me: AuthUser;
   list: TodoList;
   onBack: () => void;
+  onUnauthorized?: () => void;
 }) {
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [todoErrors, setTodoErrors] = useState<Record<string, string>>({});
+  const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [viewers, setViewers] = useState<Viewer[]>([]);
   const [locks, setLocks] = useState<Record<string, LockGranted>>({});
   const [newName, setNewName] = useState('');
@@ -66,15 +75,103 @@ export function ListDetail({
   const [shareSuccess, setShareSuccess] = useState<string | null>(null);
   const [openDeps, setOpenDeps] = useState<string | null>(null);
   const [depsByTodo, setDepsByTodo] = useState<Record<string, Todo[]>>({});
-  const [depError, setDepError] = useState<string | null>(null);
+  const [depErrors, setDepErrors] = useState<Record<string, string>>({});
+  const [connectionLost, setConnectionLost] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const saveGenerations = useRef<Record<string, number>>({});
+  const patchGenerations = useRef<Record<string, number>>({});
+  const loadGeneration = useRef(0);
+  const mounted = useRef(true);
+  const createGeneration = useRef(0);
+  const createBusyRef = useRef(false);
+  const pendingDeleteIds = useRef(new Set<string>());
+  const activeContext = useRef({ token, listId: list.id });
+  activeContext.current = { token, listId: list.id };
+
+  function currentContext(expectedToken: string, expectedListId: string) {
+    return (
+      mounted.current &&
+      activeContext.current.token === expectedToken &&
+      activeContext.current.listId === expectedListId
+    );
+  }
+
+  function errorMessage(error: unknown, fallback: string) {
+    return error instanceof Error && error.message ? error.message : fallback;
+  }
+
+  async function loadTodos(showLoading = true) {
+    const expectedToken = token;
+    const expectedListId = list.id;
+    const generation = ++loadGeneration.current;
+    if (showLoading) setLoadState('loading');
+    setLoadError(null);
+    try {
+      const loaded = await api.todos(expectedToken, expectedListId);
+      if (generation !== loadGeneration.current || !currentContext(expectedToken, expectedListId)) {
+        return false;
+      }
+      setTodos(loaded);
+      setLoadState('ready');
+      return true;
+    } catch (error) {
+      if (generation !== loadGeneration.current || !currentContext(expectedToken, expectedListId)) {
+        return false;
+      }
+      setLoadError(errorMessage(error, 'Could not load todos'));
+      setLoadState('error');
+      return false;
+    }
+  }
+
+  async function reloadConfirmedTodos(
+    expectedToken: string,
+    expectedListId: string,
+    operationIsCurrent: () => boolean,
+  ) {
+    try {
+      const loaded = await api.todos(expectedToken, expectedListId);
+      if (!currentContext(expectedToken, expectedListId) || !operationIsCurrent()) return false;
+      setTodos(loaded);
+      setLoadError(null);
+      setLoadState('ready');
+      return true;
+    } catch (error) {
+      if (!currentContext(expectedToken, expectedListId) || !operationIsCurrent()) return false;
+      setLoadError(errorMessage(error, 'Could not reload todos'));
+      setLoadState('error');
+      return false;
+    }
+  }
 
   useEffect(() => {
-    api.todos(token, list.id).then(setTodos);
+    mounted.current = true;
+    setTodos([]);
+    setTodoErrors({});
+    setCreateError(null);
+    setCreateBusy(false);
+    createBusyRef.current = false;
+    createGeneration.current += 1;
+    pendingDeleteIds.current.clear();
+    setPendingDeletes(new Set());
+    setLoadState('loading');
+    setLoadError(null);
+    void loadTodos();
     const socket = createSocket(token);
     socketRef.current = socket;
-    socket.on('connect', () => socket.emit('list:join', { listId: list.id }));
+    socket.on('connect', () => {
+      setConnectionLost(false);
+      socket.emit('list:join', { listId: list.id });
+    });
+    socket.on('disconnect', () => setConnectionLost(true));
+    socket.on('connect_error', (err: Error & { data?: { status?: number } }) => {
+      if (err.data?.status === 401) {
+        onUnauthorized?.();
+      } else {
+        setConnectionLost(true);
+      }
+    });
     socket.on('presence:update', (p: { viewers: Viewer[] }) => setViewers(p.viewers));
     socket.on('todo:created', (p: { todo: Todo }) =>
       setTodos((prev) => (prev.some((t) => t.id === p.todo.id) ? prev : [...prev, p.todo])),
@@ -102,6 +199,10 @@ export function ListDetail({
       }),
     );
     return () => {
+      mounted.current = false;
+      loadGeneration.current += 1;
+      Object.values(saveTimers.current).forEach(clearTimeout);
+      saveTimers.current = {};
       socket.emit('list:leave', { listId: list.id });
       socket.disconnect();
     };
@@ -125,11 +226,31 @@ export function ListDetail({
   }
 
   async function createTodo() {
-    if (!newName.trim()) return;
-    const todo = await api.createTodo(token, list.id, newName.trim(), { priority: newPriority });
-    setTodos((prev) => (prev.some((t) => t.id === todo.id) ? prev : [...prev, todo]));
-    setNewName('');
-    setNewPriority('MEDIUM');
+    if (!newName.trim() || createBusyRef.current) return;
+    const expectedToken = token;
+    const expectedListId = list.id;
+    const generation = ++createGeneration.current;
+    createBusyRef.current = true;
+    setCreateBusy(true);
+    setCreateError(null);
+    try {
+      const todo = await api.createTodo(expectedToken, expectedListId, newName.trim(), {
+        priority: newPriority,
+      });
+      if (!currentContext(expectedToken, expectedListId)) return;
+      setTodos((prev) => (prev.some((t) => t.id === todo.id) ? prev : [...prev, todo]));
+      setNewName('');
+      setNewPriority('MEDIUM');
+    } catch (error) {
+      if (currentContext(expectedToken, expectedListId)) {
+        setCreateError(errorMessage(error, 'Could not add todo'));
+      }
+    } finally {
+      if (generation === createGeneration.current) {
+        createBusyRef.current = false;
+        if (currentContext(expectedToken, expectedListId)) setCreateBusy(false);
+      }
+    }
   }
 
   async function addEditor(event: FormEvent<HTMLFormElement>) {
@@ -178,14 +299,42 @@ export function ListDetail({
   ) {
     setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, [field]: value } : t)));
     const key = `${todo.id}:${field}`;
+    const generation = (saveGenerations.current[key] ?? 0) + 1;
+    saveGenerations.current[key] = generation;
     clearTimeout(saveTimers.current[key]);
     saveTimers.current[key] = setTimeout(async () => {
+      const expectedToken = token;
+      const expectedListId = list.id;
       try {
         const payload = field === 'description' ? { description: value || null } : { name: value };
-        const saved = await api.updateTodo(token, todo.id, todo.version, payload);
+        const saved = await api.updateTodo(expectedToken, todo.id, todo.version, payload);
+        if (
+          saveGenerations.current[key] !== generation ||
+          !currentContext(expectedToken, expectedListId)
+        ) return;
         setTodos((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
-      } catch {
-        api.todos(token, list.id).then(setTodos);
+        setTodoErrors((prev) => {
+          const next = { ...prev };
+          delete next[todo.id];
+          return next;
+        });
+      } catch (error) {
+        const message = errorMessage(error, 'Could not save todo');
+        if (
+          saveGenerations.current[key] !== generation ||
+          !currentContext(expectedToken, expectedListId)
+        ) return;
+        await reloadConfirmedTodos(
+          expectedToken,
+          expectedListId,
+          () => saveGenerations.current[key] === generation,
+        );
+        if (
+          saveGenerations.current[key] === generation &&
+          currentContext(expectedToken, expectedListId)
+        ) {
+          setTodoErrors((prev) => ({ ...prev, [todo.id]: message }));
+        }
       }
     }, 450);
   }
@@ -196,14 +345,42 @@ export function ListDetail({
       Pick<Todo, 'status' | 'priority' | 'dueDate' | 'recurrenceUnit' | 'recurrenceInterval'>
     >,
   ) {
+    const expectedToken = token;
+    const expectedListId = list.id;
+    const generation = (patchGenerations.current[todo.id] ?? 0) + 1;
+    patchGenerations.current[todo.id] = generation;
     startEditing(todo.id);
     try {
-      const saved = await api.updateTodo(token, todo.id, todo.version, patch);
+      const saved = await api.updateTodo(expectedToken, todo.id, todo.version, patch);
+      if (
+        !currentContext(expectedToken, expectedListId) ||
+        patchGenerations.current[todo.id] !== generation
+      ) return;
       setTodos((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
-    } catch {
-      api.todos(token, list.id).then(setTodos);
+      setTodoErrors((prev) => {
+        const next = { ...prev };
+        delete next[todo.id];
+        return next;
+      });
+    } catch (error) {
+      const message = errorMessage(error, 'Could not update todo');
+      if (
+        !currentContext(expectedToken, expectedListId) ||
+        patchGenerations.current[todo.id] !== generation
+      ) return;
+      await reloadConfirmedTodos(
+        expectedToken,
+        expectedListId,
+        () => patchGenerations.current[todo.id] === generation,
+      );
+      if (
+        currentContext(expectedToken, expectedListId) &&
+        patchGenerations.current[todo.id] === generation
+      ) {
+        setTodoErrors((prev) => ({ ...prev, [todo.id]: message }));
+      }
     } finally {
-      stopEditing(todo.id);
+      if (currentContext(expectedToken, expectedListId)) stopEditing(todo.id);
     }
   }
 
@@ -213,43 +390,93 @@ export function ListDetail({
   }
 
   async function remove(todo: Todo) {
-    await api.deleteTodo(token, todo.id);
-    setTodos((prev) => prev.filter((t) => t.id !== todo.id));
+    if (pendingDeleteIds.current.has(todo.id)) return;
+    const expectedToken = token;
+    const expectedListId = list.id;
+    pendingDeleteIds.current.add(todo.id);
+    setPendingDeletes((prev) => new Set(prev).add(todo.id));
+    setTodoErrors((prev) => {
+      const next = { ...prev };
+      delete next[todo.id];
+      return next;
+    });
+    try {
+      await api.deleteTodo(expectedToken, todo.id);
+      if (!currentContext(expectedToken, expectedListId)) return;
+      setTodos((prev) => prev.filter((t) => t.id !== todo.id));
+    } catch (error) {
+      if (currentContext(expectedToken, expectedListId)) {
+        setTodoErrors((prev) => ({
+          ...prev,
+          [todo.id]: errorMessage(error, 'Could not delete todo'),
+        }));
+      }
+    } finally {
+      if (currentContext(expectedToken, expectedListId)) {
+        pendingDeleteIds.current.delete(todo.id);
+        setPendingDeletes((prev) => {
+          const next = new Set(prev);
+          next.delete(todo.id);
+          return next;
+        });
+      }
+    }
   }
 
   function refresh() {
-    api.todos(token, list.id).then(setTodos);
+    void loadTodos(false);
   }
 
   async function toggleDeps(todoId: string) {
-    setDepError(null);
+    setDepErrors((prev) => {
+      const next = { ...prev };
+      delete next[todoId];
+      return next;
+    });
     if (openDeps === todoId) {
       setOpenDeps(null);
       return;
     }
     setOpenDeps(todoId);
-    const deps = await api.dependencies(token, todoId);
-    setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+    try {
+      const deps = await api.dependencies(token, todoId);
+      setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+    } catch (err) {
+      setDepErrors((prev) => ({ ...prev, [todoId]: errorMessage(err, 'Could not load dependencies') }));
+    }
   }
 
   async function addDep(todoId: string, dependencyId: string) {
     if (!dependencyId) return;
-    setDepError(null);
+    setDepErrors((prev) => {
+      const next = { ...prev };
+      delete next[todoId];
+      return next;
+    });
     try {
       await api.addDependency(token, todoId, dependencyId);
       const deps = await api.dependencies(token, todoId);
       setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
       refresh();
     } catch (err) {
-      setDepError((err as Error).message);
+      setDepErrors((prev) => ({ ...prev, [todoId]: errorMessage(err, 'Could not add dependency') }));
     }
   }
 
   async function removeDep(todoId: string, depId: string) {
-    await api.removeDependency(token, todoId, depId);
-    const deps = await api.dependencies(token, todoId);
-    setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
-    refresh();
+    setDepErrors((prev) => {
+      const next = { ...prev };
+      delete next[todoId];
+      return next;
+    });
+    try {
+      await api.removeDependency(token, todoId, depId);
+      const deps = await api.dependencies(token, todoId);
+      setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+      refresh();
+    } catch (err) {
+      setDepErrors((prev) => ({ ...prev, [todoId]: errorMessage(err, 'Could not remove dependency') }));
+    }
   }
 
   const canShare = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(collaboratorEmail.trim());
@@ -283,6 +510,12 @@ export function ListDetail({
           </div>
         </div>
 
+        {connectionLost && (
+          <div className="connection-status" role="status" aria-live="polite">
+            Live updates disconnected. Reconnecting…
+          </div>
+        )}
+
         {me.id === list.ownerId && (
           <form className="share-form" data-testid="share-form" onSubmit={addEditor}>
             <div className="share-field">
@@ -313,9 +546,7 @@ export function ListDetail({
             {(shareError || shareSuccess) && (
               <div className="share-feedback">
                 {shareError && (
-                  <p className="error-text" role="alert">
-                    {shareError}
-                  </p>
+                  <ErrorAlert message={shareError} compact />
                 )}
                 {shareSuccess && (
                   <p className="success-text" role="status">
@@ -327,21 +558,36 @@ export function ListDetail({
           </form>
         )}
 
+        {loadState === 'loading' && (
+          <p className="loading" role="status" aria-live="polite">
+            Loading todos…
+          </p>
+        )}
+        {loadError && <ErrorAlert message={loadError} onRetry={() => void loadTodos()} />}
+
         <div className="composer">
           <input
             className="input"
             placeholder="Add a todo…"
             value={newName}
-            onChange={(e) => setNewName(e.target.value)}
+            disabled={createBusy}
+            onChange={(e) => {
+              setNewName(e.target.value);
+              setCreateError(null);
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') createTodo();
+              if (e.key === 'Enter') void createTodo();
             }}
             aria-label="New todo name"
           />
           <select
             className={`select priority-${newPriority}`}
             value={newPriority}
-            onChange={(e) => setNewPriority(e.target.value as TodoPriority)}
+            disabled={createBusy}
+            onChange={(e) => {
+              setNewPriority(e.target.value as TodoPriority);
+              setCreateError(null);
+            }}
             aria-label="New todo priority"
           >
             {PRIORITIES.map((p) => (
@@ -350,13 +596,18 @@ export function ListDetail({
               </option>
             ))}
           </select>
-          <button className="btn btn-primary" onClick={createTodo} disabled={!newName.trim()}>
+          <button
+            className="btn btn-primary"
+            onClick={() => void createTodo()}
+            disabled={!newName.trim() || createBusy}
+          >
             <PlusIcon size={16} />
-            Add
+            {createBusy ? 'Adding…' : 'Add'}
           </button>
         </div>
+        {createError && <ErrorAlert message={createError} compact />}
 
-        {todos.length === 0 ? (
+        {loadState === 'ready' && todos.length === 0 ? (
           <p className="empty">Nothing here yet — add your first todo above.</p>
         ) : (
           <ul className="todo-list">
@@ -381,7 +632,7 @@ export function ListDetail({
                       data-testid={`todo-check-${todo.id}`}
                       className={`check check-${todo.priority}${done ? ' checked' : ''}`}
                       disabled={disabled || blockedActive}
-                      onClick={() => toggleComplete(todo)}
+                      onClick={() => void toggleComplete(todo)}
                       aria-label={done ? 'Mark as not done' : 'Mark as done'}
                       aria-pressed={done}
                       title={
@@ -462,14 +713,18 @@ export function ListDetail({
                     <button
                       data-testid={`todo-delete-${todo.id}`}
                       className="btn-icon-danger"
-                      disabled={disabled}
-                      onClick={() => remove(todo)}
+                      disabled={disabled || pendingDeletes.has(todo.id)}
+                      onClick={() => void remove(todo)}
                       aria-label="Delete todo"
                       title="Delete"
                     >
                       <TrashIcon size={16} />
                     </button>
                   </div>
+
+                  {todoErrors[todo.id] && (
+                    <ErrorAlert message={todoErrors[todo.id]} compact />
+                  )}
 
                   {openDeps === todo.id && (
                     <div className="deps-panel">
@@ -602,7 +857,15 @@ export function ListDetail({
                               ))}
                           </select>
                         </div>
-                        {depError && <span className="error-text">{depError}</span>}
+                        {depErrors[todo.id] && (
+                          <ErrorAlert message={depErrors[todo.id]} compact onDismiss={() =>
+                            setDepErrors((prev) => {
+                              const next = { ...prev };
+                              delete next[todo.id];
+                              return next;
+                            })
+                          } />
+                        )}
                       </div>
                     </div>
                   )}
