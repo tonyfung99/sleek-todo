@@ -34,10 +34,24 @@ Docker Compose · GitHub Actions.
 - **pnpm** via Corepack (`corepack enable`)
 - **Docker** + Docker Compose
 
-## Quick start (local dev)
+## Quick start (one command, all in Docker)
 
-The app is a pnpm monorepo: `api/` (NestJS) and `web/` (React/Vite). Postgres and
-Redis run in Docker; the API and web dev server run on your host.
+The whole stack — Postgres, Redis, the **API**, and the **web app** — runs in Docker.
+The API applies database migrations automatically on startup.
+
+```bash
+docker compose up --build
+```
+
+Then open **http://localhost:5173**, register an account, and create a list.
+(API: http://localhost:3000 · health: `curl http://localhost:3000/health/ready`.)
+
+Stop with `docker compose down` (add `-v` to also drop the database volume).
+
+## Development (hot-reload)
+
+For iterative work, run Postgres + Redis in Docker and the API + web on your host
+with hot-reload. The app is a pnpm monorepo: `api/` (NestJS) and `web/` (React/Vite).
 
 ```bash
 # 0. install dependencies (repo root)
@@ -63,11 +77,8 @@ NODE_ENV=development \
 pnpm --filter web dev
 ```
 
-Open **http://localhost:5173**, register an account, and create a list.
-
 > **Hostnames:** `.env.example` uses `postgres` / `redis` (the service names used
-> *inside* Docker). When running the API on your host, use **`localhost`** as shown
-> above. Health check: `curl http://localhost:3000/health/ready`.
+> *inside* Docker). When running the API on your host, use **`localhost`** as shown above.
 
 ## Try real-time collaboration
 
@@ -114,7 +125,8 @@ api/                 NestJS API
 web/                 React + Vite client
   src/               auth, lists, and real-time list-detail screens
   e2e/               Playwright browser tests
-docker-compose.yml   postgres + redis + api
+  Dockerfile         builds the SPA, serves it via nginx
+docker-compose.yml   postgres + redis + api + web (full stack)
 docs/                design specs, decision log, implementation plans
 ```
 
