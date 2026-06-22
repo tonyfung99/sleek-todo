@@ -8,7 +8,8 @@ async function req<T>(path: string, init: RequestInit, token?: string): Promise<
     ...(init.headers as Record<string, string> | undefined),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+  // credentials:'include' so the httpOnly refresh cookie round-trips.
+  const res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -30,6 +31,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
+  refresh: () => req<AuthResult>('/auth/refresh', { method: 'POST' }),
+  logout: () => req<void>('/auth/logout', { method: 'POST' }),
   lists: (token: string) => req<TodoList[]>('/lists', { method: 'GET' }, token),
   createList: (token: string, name: string) =>
     req<TodoList>('/lists', { method: 'POST', body: JSON.stringify({ name }) }, token),
