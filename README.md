@@ -48,6 +48,17 @@ Then open **http://localhost:5173**, register an account, and create a list.
 
 Stop with `docker compose down` (add `-v` to also drop the database volume).
 
+**Port already in use?** The published host ports are configurable — override any
+that clash with another app (rebuild so the web bundle picks up the new API URL):
+
+```bash
+API_PORT=3001 WEB_PORT=5174 docker compose up --build
+# then open http://localhost:5174
+```
+
+Defaults: `API_PORT=3000`, `WEB_PORT=5173`, `POSTGRES_PORT=5432`, `REDIS_PORT=6379`
+(also settable in `.env`).
+
 ## Development (hot-reload)
 
 For iterative work, run Postgres + Redis in Docker and the API + web on your host
