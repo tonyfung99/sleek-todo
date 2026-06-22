@@ -31,30 +31,33 @@ test('two users collaborate live on a shared list', async ({ browser }) => {
   const alice = await registerUser(rq, 'Alice');
   const bob = await registerUser(rq, 'Bob');
 
-  // Alice creates a list, adds Bob as EDITOR, adds a todo.
+  // Alice creates a list and adds a todo.
   const listRes = await rq.post(`${API}/lists`, {
     headers: { Authorization: `Bearer ${alice.accessToken}` },
     data: { name: 'Demo' },
   });
   const list = (await listRes.json()) as { id: string };
-  await rq.post(`${API}/lists/${list.id}/members`, {
-    headers: { Authorization: `Bearer ${alice.accessToken}` },
-    data: { email: bob.user.email, role: 'EDITOR' },
-  });
   const todoRes = await rq.post(`${API}/lists/${list.id}/todos`, {
     headers: { Authorization: `Bearer ${alice.accessToken}` },
     data: { name: 'Buy milk' },
   });
   const todo = (await todoRes.json()) as { id: string };
 
-  // Both open the list in separate browser contexts.
+  // Alice opens the list and shares it with Bob through the UI.
   const aliceCtx = await openAs(browser, alice);
-  const bobCtx = await openAs(browser, bob);
   const aPage = await aliceCtx.newPage();
-  const bPage = await bobCtx.newPage();
   await aPage.goto('/');
-  await bPage.goto('/');
   await aPage.getByTestId(`list-item-${list.id}`).click();
+
+  await aPage.getByLabel('Collaborator email').fill(bob.user.email);
+  await aPage.getByRole('button', { name: 'Add editor' }).click();
+  await expect(aPage.getByRole('status')).toContainText('can now edit this list');
+
+  // Bob opens the newly shared list in a separate browser context.
+  const bobCtx = await openAs(browser, bob);
+  const bPage = await bobCtx.newPage();
+  await bPage.goto('/');
+  await expect(bPage.getByTestId(`list-item-${list.id}`)).toBeVisible();
   await bPage.getByTestId(`list-item-${list.id}`).click();
 
   // Presence: each sees 2 viewers.

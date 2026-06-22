@@ -15,6 +15,7 @@
   --color-border-strong: #99f6e4;
   --color-danger: #dc2626;
   --color-danger-hover: #b91c1c;
+  --color-success: #047857;
   --color-lock-bg: #fff7ed;
   --color-lock-fg: #9a3412;
   --color-lock-border: #fed7aa;
@@ -347,6 +348,51 @@ h2 {
   justify-content: space-between;
   gap: 16px;
   margin: 16px 0 8px;
+}
+
+.share-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.share-form .label {
+  color: var(--color-fg);
+}
+
+.share-form .btn-primary {
+  background: var(--color-primary-hover);
+}
+
+.share-form .btn-primary:hover:not(:disabled) {
+  background: var(--color-fg);
+}
+
+.share-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.share-button {
+  min-height: 44px;
+}
+
+.share-feedback {
+  grid-column: 1 / -1;
+  min-height: 20px;
+}
+
+.success-text {
+  color: var(--color-success);
+  font-size: 13px;
+  margin: 0;
 }
 
 .presence-bar {
@@ -736,6 +782,16 @@ h2 {
 
 .dep-remove:hover {
   color: var(--color-danger);
+}
+
+@media (max-width: 560px) {
+  .share-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .share-button {
+    width: 100%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

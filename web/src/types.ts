@@ -4,6 +4,8 @@ export type TodoPriority = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type RecurrenceUnit = 'DAY' | 'WEEK' | 'MONTH';
 
+export type MemberRole = 'OWNER' | 'EDITOR' | 'VIEWER';
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -19,6 +21,13 @@ export interface TodoList {
   id: string;
   name: string;
   ownerId: string;
+}
+
+export interface ListMembership {
+  id: string;
+  listId: string;
+  userId: string;
+  role: MemberRole;
 }
 
 export interface Todo {

@@ -1,4 +1,12 @@
-import { AuthResult, Todo, TodoList, TodoPage, TodoPriority } from './types';
+import {
+  AuthResult,
+  ListMembership,
+  MemberRole,
+  Todo,
+  TodoList,
+  TodoPage,
+  TodoPriority,
+} from './types';
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
@@ -36,6 +44,12 @@ export const api = {
   lists: (token: string) => req<TodoList[]>('/lists', { method: 'GET' }, token),
   createList: (token: string, name: string) =>
     req<TodoList>('/lists', { method: 'POST', body: JSON.stringify({ name }) }, token),
+  addMember: (token: string, listId: string, email: string, role: MemberRole) =>
+    req<ListMembership>(
+      `/lists/${listId}/members`,
+      { method: 'POST', body: JSON.stringify({ email, role }) },
+      token,
+    ),
   todos: (token: string, listId: string, queryString = '') =>
     req<TodoPage>(`/lists/${listId}/todos${queryString}`, { method: 'GET' }, token).then(
       (page) => page.items,

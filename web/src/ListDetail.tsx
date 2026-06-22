@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { Socket } from 'socket.io-client';
 import { api } from './api';
 import { createSocket } from './socket';
@@ -60,6 +60,10 @@ export function ListDetail({
   const [locks, setLocks] = useState<Record<string, LockGranted>>({});
   const [newName, setNewName] = useState('');
   const [newPriority, setNewPriority] = useState<TodoPriority>('MEDIUM');
+  const [collaboratorEmail, setCollaboratorEmail] = useState('');
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareSuccess, setShareSuccess] = useState<string | null>(null);
   const [openDeps, setOpenDeps] = useState<string | null>(null);
   const [depsByTodo, setDepsByTodo] = useState<Record<string, Todo[]>>({});
   const [depError, setDepError] = useState<string | null>(null);
@@ -126,6 +130,36 @@ export function ListDetail({
     setTodos((prev) => (prev.some((t) => t.id === todo.id) ? prev : [...prev, todo]));
     setNewName('');
     setNewPriority('MEDIUM');
+  }
+
+  async function addEditor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = collaboratorEmail.trim();
+    if (!email) return;
+
+    setShareBusy(true);
+    setShareError(null);
+    setShareSuccess(null);
+    try {
+      const membership = await api.addMember(token, list.id, email, 'EDITOR');
+      setCollaboratorEmail('');
+      setShareSuccess(
+        membership.role === 'VIEWER'
+          ? `${email} already has viewer access.`
+          : `${email} can now edit this list.`,
+      );
+    } catch (err) {
+      const error = err as Error & { status?: number };
+      if (error.status === 404) {
+        setShareError('That email must register before you can add them.');
+      } else if (error.status === 403) {
+        setShareError('Only the list owner can add collaborators.');
+      } else {
+        setShareError(error.message);
+      }
+    } finally {
+      setShareBusy(false);
+    }
   }
 
   function startEditing(todoId: string) {
@@ -218,6 +252,8 @@ export function ListDetail({
     refresh();
   }
 
+  const canShare = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(collaboratorEmail.trim());
+
   return (
     <main className="page">
       <div className="container">
@@ -246,6 +282,50 @@ export function ListDetail({
             ))}
           </div>
         </div>
+
+        {me.id === list.ownerId && (
+          <form className="share-form" data-testid="share-form" onSubmit={addEditor}>
+            <div className="share-field">
+              <label className="label" htmlFor="collaborator-email">
+                Collaborator email
+              </label>
+              <input
+                className="input"
+                id="collaborator-email"
+                type="email"
+                autoComplete="email"
+                value={collaboratorEmail}
+                disabled={shareBusy}
+                onChange={(event) => {
+                  setCollaboratorEmail(event.target.value);
+                  setShareError(null);
+                  setShareSuccess(null);
+                }}
+              />
+            </div>
+            <button
+              className="btn btn-primary share-button"
+              type="submit"
+              disabled={!canShare || shareBusy}
+            >
+              {shareBusy ? 'Adding…' : 'Add editor'}
+            </button>
+            {(shareError || shareSuccess) && (
+              <div className="share-feedback">
+                {shareError && (
+                  <p className="error-text" role="alert">
+                    {shareError}
+                  </p>
+                )}
+                {shareSuccess && (
+                  <p className="success-text" role="status">
+                    {shareSuccess}
+                  </p>
+                )}
+              </div>
+            )}
+          </form>
+        )}
 
         <div className="composer">
           <input
