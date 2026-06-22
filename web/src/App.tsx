@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api } from './api';
+import { useCallback, useEffect, useState } from 'react';
+import { api, setUnauthorizedHandler } from './api';
 import { AuthScreen } from './AuthScreen';
 import { ListDetail } from './ListDetail';
 import { ListsScreen } from './ListsScreen';
@@ -29,6 +29,19 @@ function clearSession(): void {
 export function App() {
   const [auth, setAuth] = useState<AuthResult | null>(loadSession);
   const [openList, setOpenList] = useState<TodoList | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+
+  const handleUnauthorized = useCallback(() => {
+    clearSession();
+    setOpenList(null);
+    setAuth(null);
+    setAuthNotice('Your session expired. Please log in again.');
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(handleUnauthorized);
+    return () => setUnauthorizedHandler(null);
+  }, [handleUnauthorized]);
 
   // No stored session? Try to restore one from the httpOnly refresh cookie.
   useEffect(() => {
@@ -50,6 +63,7 @@ export function App() {
   }, [auth]);
 
   function handleAuth(result: AuthResult) {
+    setAuthNotice(null);
     saveSession(result);
     setAuth(result);
   }
@@ -60,13 +74,20 @@ export function App() {
     } catch {
       /* ignore network errors on logout */
     }
+    setAuthNotice(null);
     clearSession();
     setOpenList(null);
     setAuth(null);
   }
 
   if (!auth) {
-    return <AuthScreen onAuth={handleAuth} />;
+    return (
+      <AuthScreen
+        onAuth={handleAuth}
+        initialMode={authNotice ? 'login' : undefined}
+        initialError={authNotice}
+      />
+    );
   }
   if (openList) {
     return (
