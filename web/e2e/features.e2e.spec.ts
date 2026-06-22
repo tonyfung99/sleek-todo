@@ -63,6 +63,9 @@ test('dependencies block, recurrence spawns next occurrence, logout works', asyn
   await taskRow.getByLabel('Add dependency').selectOption({ label: 'Run QA' });
   await expect(page.getByTestId(`blocked-${taskId}`)).toBeVisible();
 
+  // A blocked todo cannot be completed — its checkbox is disabled.
+  await expect(page.getByTestId(`todo-check-${taskId}`)).toBeDisabled();
+
   // Two rows so far (Deploy, QA). QA's Daily repeat shows in its Deps panel.
   await expect(page.locator('[data-testid^="todo-row-"]')).toHaveCount(2);
   const prereqRow = page.getByTestId(`todo-row-${prereqId}`);

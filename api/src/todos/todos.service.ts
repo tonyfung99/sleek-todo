@@ -202,6 +202,12 @@ export class TodosService {
         return { saved: todo, next: null as Todo | null };
       }
       if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
+      // A task that can't be started (unmet dependencies) can't be completed either.
+      if (await isBlocked(m, todoId)) {
+        throw new UnprocessableEntityException(
+          'Blocked: every dependency must be COMPLETED before completing this todo',
+        );
+      }
       this.applyPatch(todo, dto);
       this.normalizeRecurrence(todo);
       todo.status = TodoStatus.COMPLETED;

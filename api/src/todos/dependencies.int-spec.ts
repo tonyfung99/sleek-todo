@@ -98,6 +98,23 @@ describe('Dependencies (integration: cycle, gate, blocked filter)', () => {
     await patch(task.id, task.version, { status: 'IN_PROGRESS' }, 200);
   });
 
+  it('blocks COMPLETED (not just IN_PROGRESS) until all dependencies are COMPLETED', async () => {
+    const task = await addTodo('Finish');
+    const prereq = await addTodo('Prep');
+    await http()
+      .post(`/todos/${task.id}/dependencies`)
+      .set(auth())
+      .send({ dependencyId: prereq.id })
+      .expect(201);
+
+    // prereq not completed → completing task directly is rejected (422)
+    await patch(task.id, task.version, { status: 'COMPLETED' }, 422);
+
+    // complete the prereq, then the task can be completed
+    await patch(prereq.id, prereq.version, { status: 'COMPLETED' }, 200);
+    await patch(task.id, task.version, { status: 'COMPLETED' }, 200);
+  });
+
   it('filters by dependencyStatus=blocked / unblocked', async () => {
     // fresh list to isolate
     const lid = (await http().post('/lists').set(auth()).send({ name: 'F' }).expect(201)).body.id;
