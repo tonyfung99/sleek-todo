@@ -491,6 +491,79 @@ h2 {
   border-radius: 999px;
 }
 
+.btn-sm {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.blocked-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+.deps-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.deps-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.deps-empty {
+  font-size: 12px;
+  color: var(--color-fg-muted);
+}
+
+.dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 3px 6px 3px 10px;
+}
+
+.dep-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  display: inline-block;
+}
+
+.dep-remove {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.dep-remove:hover {
+  color: var(--color-danger);
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;

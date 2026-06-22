@@ -32,6 +32,10 @@ export class ListTodosQueryDto {
   dueAfter?: string;
 
   @IsOptional()
+  @IsIn(['blocked', 'unblocked'])
+  dependencyStatus?: 'blocked' | 'unblocked';
+
+  @IsOptional()
   @IsIn(['dueDate', 'priority', 'status', 'name', 'createdAt'])
   sort?: SortField;
 

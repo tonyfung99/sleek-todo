@@ -3,15 +3,18 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { ListsService } from '../lists/lists.service';
+import { runSerializable } from '../common/serializable';
 import { REALTIME_EMITTER, RealtimeEmitter } from '../realtime/realtime.types';
 import { CreateTodoDto } from './dto/create-todo.dto';
 import { ListTodosQueryDto } from './dto/list-todos-query.dto';
 import { UpdateTodoDto } from './dto/update-todo.dto';
-import { Todo, TodoPriority } from './todo.entity';
+import { Todo, TodoPriority, TodoStatus } from './todo.entity';
+import { TodoDependency } from './todo-dependency.entity';
 import {
   SORT_CONFIG,
   decodeCursor,
@@ -19,17 +22,27 @@ import {
   keysetClause,
 } from './todo-keyset';
 
+export type TodoView = Todo & { blocked: boolean };
+
 export interface PaginatedTodos {
-  items: Todo[];
+  items: TodoView[];
   nextCursor: string | null;
 }
 
 const DEFAULT_LIMIT = 50;
 
+// EXISTS subquery: the todo has ≥1 dependency that is not COMPLETED.
+const BLOCKED_EXISTS = `EXISTS (
+  SELECT 1 FROM todo_dependencies d
+  JOIN todos dt ON dt.id = d."dependencyId"
+  WHERE d."dependentId" = t.id AND dt.status <> 'COMPLETED' AND dt."deletedAt" IS NULL
+)`;
+
 @Injectable()
 export class TodosService {
   constructor(
     @InjectRepository(Todo) private readonly todos: Repository<Todo>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly lists: ListsService,
     @Inject(REALTIME_EMITTER) private readonly emitter: RealtimeEmitter,
   ) {}
@@ -55,6 +68,8 @@ export class TodosService {
     if (query.priority) qb.andWhere('t.priority = :priority', { priority: query.priority });
     if (query.dueBefore) qb.andWhere('t.dueDate <= :dueBefore', { dueBefore: query.dueBefore });
     if (query.dueAfter) qb.andWhere('t.dueDate >= :dueAfter', { dueAfter: query.dueAfter });
+    if (query.dependencyStatus === 'blocked') qb.andWhere(BLOCKED_EXISTS);
+    if (query.dependencyStatus === 'unblocked') qb.andWhere(`NOT ${BLOCKED_EXISTS}`);
 
     if (query.cursor) {
       const cursor = decodeCursor(query.cursor);
@@ -65,11 +80,16 @@ export class TodosService {
     }
 
     const orderDir = dir === 'asc' ? 'ASC' : 'DESC';
-    qb.orderBy(config.expr, orderDir, 'NULLS LAST')
+    qb.addSelect(BLOCKED_EXISTS, 'blocked')
+      .orderBy(config.expr, orderDir, 'NULLS LAST')
       .addOrderBy('t.id', orderDir)
       .take(limit + 1);
 
-    const rows = await qb.getMany();
+    const { entities, raw } = await qb.getRawAndEntities();
+    const rows: TodoView[] = entities.map((e, i) => {
+      const blocked = raw[i]?.blocked === true || raw[i]?.blocked === 'true';
+      return Object.assign(e, { blocked }) as TodoView;
+    });
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     const last = items[items.length - 1];
@@ -101,19 +121,36 @@ export class TodosService {
     dto: UpdateTodoDto,
     ifMatchVersion: number,
   ): Promise<Todo> {
+    // Transitioning to IN_PROGRESS is dependency-gated and write-skew-prone, so it
+    // runs under SERIALIZABLE + retry (design spec §9.2 #3). Other edits use the
+    // optimistic version check only.
+    if (dto.status === TodoStatus.IN_PROGRESS) {
+      const saved = await runSerializable(this.dataSource, async (m) => {
+        const repo = m.getRepository(Todo);
+        const todo = await repo.findOne({ where: { id: todoId } });
+        if (!todo) throw new NotFoundException('Todo not found');
+        await this.lists.assertCanEdit(todo.listId, userId);
+        if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
+        if (await this.hasUnmetDependencies(m, todoId)) {
+          throw new UnprocessableEntityException(
+            'Blocked: every dependency must be COMPLETED before starting',
+          );
+        }
+        this.applyPatch(todo, dto);
+        todo.status = TodoStatus.IN_PROGRESS;
+        todo.version += 1;
+        return repo.save(todo);
+      });
+      this.emitter.emitTodoUpdated(saved.listId, saved);
+      return saved;
+    }
+
     const todo = await this.todos.findOne({ where: { id: todoId } });
-    if (!todo) {
-      throw new NotFoundException('Todo not found');
-    }
+    if (!todo) throw new NotFoundException('Todo not found');
     await this.lists.assertCanEdit(todo.listId, userId);
-    if (ifMatchVersion !== todo.version) {
-      throw new ConflictException('Version mismatch');
-    }
-    if (dto.name !== undefined) todo.name = dto.name;
-    if (dto.description !== undefined) todo.description = dto.description;
+    if (ifMatchVersion !== todo.version) throw new ConflictException('Version mismatch');
+    this.applyPatch(todo, dto);
     if (dto.status !== undefined) todo.status = dto.status;
-    if (dto.priority !== undefined) todo.priority = dto.priority;
-    if (dto.dueDate !== undefined) todo.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
     todo.version += 1;
     const saved = await this.todos.save(todo);
     this.emitter.emitTodoUpdated(todo.listId, saved);
@@ -128,5 +165,26 @@ export class TodosService {
     await this.lists.assertCanEdit(todo.listId, userId);
     await this.todos.softDelete(todo.id);
     this.emitter.emitTodoDeleted(todo.listId, todo.id);
+  }
+
+  // Applies non-status scalar fields from the DTO (status handled by callers).
+  private applyPatch(todo: Todo, dto: UpdateTodoDto): void {
+    if (dto.name !== undefined) todo.name = dto.name;
+    if (dto.description !== undefined) todo.description = dto.description;
+    if (dto.priority !== undefined) todo.priority = dto.priority;
+    if (dto.dueDate !== undefined) todo.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+  }
+
+  private async hasUnmetDependencies(m: EntityManager, todoId: string): Promise<boolean> {
+    const row = await m
+      .createQueryBuilder()
+      .select('COUNT(*)', 'c')
+      .from(TodoDependency, 'd')
+      .innerJoin(Todo, 't', 't.id = d.dependencyId')
+      .where('d.dependentId = :id', { id: todoId })
+      .andWhere('t.status <> :completed', { completed: TodoStatus.COMPLETED })
+      .andWhere('t.deletedAt IS NULL')
+      .getRawOne<{ c: string }>();
+    return Number.parseInt(row?.c ?? '0', 10) > 0;
   }
 }

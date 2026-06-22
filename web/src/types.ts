@@ -28,6 +28,7 @@ export interface Todo {
   status: TodoStatus;
   priority: TodoPriority;
   version: number;
+  blocked?: boolean;
 }
 
 export interface TodoPage {

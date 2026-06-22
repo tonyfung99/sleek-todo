@@ -46,6 +46,9 @@ export function ListDetail({
   const [locks, setLocks] = useState<Record<string, LockGranted>>({});
   const [newName, setNewName] = useState('');
   const [newPriority, setNewPriority] = useState<TodoPriority>('MEDIUM');
+  const [openDeps, setOpenDeps] = useState<string | null>(null);
+  const [depsByTodo, setDepsByTodo] = useState<Record<string, Todo[]>>({});
+  const [depError, setDepError] = useState<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -133,6 +136,41 @@ export function ListDetail({
   async function remove(todo: Todo) {
     await api.deleteTodo(token, todo.id);
     setTodos((prev) => prev.filter((t) => t.id !== todo.id));
+  }
+
+  function refresh() {
+    api.todos(token, list.id).then(setTodos);
+  }
+
+  async function toggleDeps(todoId: string) {
+    setDepError(null);
+    if (openDeps === todoId) {
+      setOpenDeps(null);
+      return;
+    }
+    setOpenDeps(todoId);
+    const deps = await api.dependencies(token, todoId);
+    setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+  }
+
+  async function addDep(todoId: string, dependencyId: string) {
+    if (!dependencyId) return;
+    setDepError(null);
+    try {
+      await api.addDependency(token, todoId, dependencyId);
+      const deps = await api.dependencies(token, todoId);
+      setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+      refresh();
+    } catch (err) {
+      setDepError((err as Error).message);
+    }
+  }
+
+  async function removeDep(todoId: string, depId: string) {
+    await api.removeDependency(token, todoId, depId);
+    const deps = await api.dependencies(token, todoId);
+    setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+    refresh();
   }
 
   return (
@@ -258,6 +296,12 @@ export function ListDetail({
                       aria-label="Due date"
                     />
 
+                    {todo.blocked && (
+                      <span className="blocked-badge" data-testid={`blocked-${todo.id}`}>
+                        Blocked
+                      </span>
+                    )}
+
                     {lock && (
                       <span className="lock-badge" data-testid={`lock-badge-${todo.id}`}>
                         <LockIcon size={12} />
@@ -266,6 +310,14 @@ export function ListDetail({
                     )}
 
                     <span className="spacer" />
+
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => toggleDeps(todo.id)}
+                      aria-expanded={openDeps === todo.id}
+                    >
+                      Deps
+                    </button>
 
                     <button
                       data-testid={`todo-delete-${todo.id}`}
@@ -278,6 +330,50 @@ export function ListDetail({
                       <TrashIcon size={16} />
                     </button>
                   </div>
+
+                  {openDeps === todo.id && (
+                    <div className="deps-panel">
+                      <div className="deps-chips">
+                        {(depsByTodo[todo.id] ?? []).length === 0 ? (
+                          <span className="deps-empty">No dependencies</span>
+                        ) : (
+                          (depsByTodo[todo.id] ?? []).map((d) => (
+                            <span key={d.id} className="dep-chip">
+                              {d.name}
+                              <span className={`dep-dot status-${d.status}`} title={d.status} />
+                              <button
+                                className="dep-remove"
+                                onClick={() => removeDep(todo.id, d.id)}
+                                aria-label={`Remove dependency ${d.name}`}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))
+                        )}
+                      </div>
+                      <select
+                        className="select"
+                        value=""
+                        onChange={(e) => addDep(todo.id, e.target.value)}
+                        aria-label="Add dependency"
+                      >
+                        <option value="">Add dependency…</option>
+                        {todos
+                          .filter(
+                            (t) =>
+                              t.id !== todo.id &&
+                              !(depsByTodo[todo.id] ?? []).some((d) => d.id === t.id),
+                          )
+                          .map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
+                      </select>
+                      {depError && <span className="error-text">{depError}</span>}
+                    </div>
+                  )}
                 </li>
               );
             })}

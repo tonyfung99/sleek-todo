@@ -61,4 +61,14 @@ export const api = {
     ),
   deleteTodo: (token: string, todoId: string) =>
     req<void>(`/todos/${todoId}`, { method: 'DELETE' }, token),
+  dependencies: (token: string, todoId: string) =>
+    req<Todo[]>(`/todos/${todoId}/dependencies`, { method: 'GET' }, token),
+  addDependency: (token: string, todoId: string, dependencyId: string) =>
+    req<unknown>(
+      `/todos/${todoId}/dependencies`,
+      { method: 'POST', body: JSON.stringify({ dependencyId }) },
+      token,
+    ),
+  removeDependency: (token: string, todoId: string, depId: string) =>
+    req<void>(`/todos/${todoId}/dependencies/${depId}`, { method: 'DELETE' }, token),
 };

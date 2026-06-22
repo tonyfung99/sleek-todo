@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { TodosService } from './todos.service';
 import { Todo, TodoPriority, TodoStatus } from './todo.entity';
 import { ListsService } from '../lists/lists.service';
@@ -45,7 +45,11 @@ function buildHarness() {
     emitTodoDeleted: jest.fn(),
   };
 
-  const service = new TodosService(repo, lists, emitter);
+  // These unit tests exercise non-IN_PROGRESS paths only, so the SERIALIZABLE
+  // transaction (which needs a real DataSource) is never entered.
+  const dataSource = {} as unknown as DataSource;
+
+  const service = new TodosService(repo, dataSource, lists, emitter);
   return { service, todos, lists, emitter };
 }
 
@@ -74,9 +78,10 @@ describe('TodosService', () => {
   it('update with a matching version bumps version and emits todo:updated', async () => {
     const { service, emitter } = buildHarness();
     const todo = await service.create('list-1', 'user-1', { name: 'A', description: null });
-    const updated = await service.update(todo.id, 'user-1', { status: TodoStatus.IN_PROGRESS }, 1);
+    // COMPLETED is not dependency-gated, so it stays on the optimistic (non-tx) path.
+    const updated = await service.update(todo.id, 'user-1', { status: TodoStatus.COMPLETED }, 1);
     expect(updated.version).toBe(2);
-    expect(updated.status).toBe(TodoStatus.IN_PROGRESS);
+    expect(updated.status).toBe(TodoStatus.COMPLETED);
     expect(emitter.emitTodoUpdated).toHaveBeenCalledWith('list-1', updated);
   });
 
