@@ -45,7 +45,8 @@ describe('ListsScreen', () => {
 
     renderScreen();
 
-    expect(screen.getByText('Loading lists…').className).toContain('loading-state');
+    expect(screen.getByRole('status').textContent).toBe('Loading lists…');
+    expect(screen.getByRole('status').className).toContain('loading-state');
     expect(screen.queryByText(/No lists yet/)).toBeNull();
   });
 
@@ -131,5 +132,96 @@ describe('ListsScreen', () => {
     expect(screen.getAllByText('Groceries')).toHaveLength(1);
     expect(input.value).toBe('');
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps a created list when creation finishes before a stale initial load', async () => {
+    const loading = deferredPromise<TodoList[]>();
+    const creation = deferredPromise<TodoList>();
+    apiMocks.lists.mockReturnValue(loading.promise);
+    apiMocks.createList.mockReturnValue(creation.promise);
+    renderScreen();
+
+    const input = screen.getByLabelText('New list name');
+    fireEvent.change(input, { target: { value: 'Groceries' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await act(async () => {
+      creation.resolve(groceries);
+      await creation.promise;
+    });
+    await act(async () => {
+      loading.resolve([]);
+      await loading.promise;
+    });
+
+    expect(screen.getAllByText('Groceries')).toHaveLength(1);
+    expect(screen.queryByText(/No lists yet/)).toBeNull();
+  });
+
+  it('does not duplicate a created list when loading finishes before creation', async () => {
+    const loading = deferredPromise<TodoList[]>();
+    const creation = deferredPromise<TodoList>();
+    apiMocks.lists.mockReturnValue(loading.promise);
+    apiMocks.createList.mockReturnValue(creation.promise);
+    renderScreen();
+
+    const input = screen.getByLabelText('New list name');
+    fireEvent.change(input, { target: { value: 'Groceries' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await act(async () => {
+      loading.resolve([groceries]);
+      await loading.promise;
+    });
+    await act(async () => {
+      creation.resolve(groceries);
+      await creation.promise;
+    });
+
+    expect(screen.getAllByText('Groceries')).toHaveLength(1);
+  });
+
+  it('ignores an old-token creation and allows the new account to create', async () => {
+    const oldCreation = deferredPromise<TodoList>();
+    const newCreation = deferredPromise<TodoList>();
+    apiMocks.lists.mockResolvedValue([]);
+    apiMocks.createList
+      .mockReturnValueOnce(oldCreation.promise)
+      .mockReturnValueOnce(newCreation.promise);
+    const view = render(
+      <ListsScreen token="old-token" onOpen={vi.fn()} onLogout={vi.fn()} />,
+    );
+    await screen.findByText(/No lists yet/);
+
+    const input = screen.getByLabelText('New list name');
+    fireEvent.change(input, { target: { value: 'Groceries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(screen.getByRole('button', { name: 'Creating…' })).toBeTruthy();
+
+    view.rerender(
+      <ListsScreen token="new-token" onOpen={vi.fn()} onLogout={vi.fn()} />,
+    );
+    await waitFor(() => expect(apiMocks.lists).toHaveBeenCalledWith('new-token'));
+    expect((screen.getByLabelText('New list name') as HTMLInputElement).value).toBe('');
+
+    fireEvent.change(screen.getByLabelText('New list name'), { target: { value: 'Work' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await act(async () => {
+      oldCreation.resolve(groceries);
+      await oldCreation.promise;
+    });
+
+    expect(screen.queryByText('Groceries')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'Creating…' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      newCreation.resolve({ id: 'list-2', name: 'Work', ownerId: 'user-2' });
+      await newCreation.promise;
+    });
+
+    expect(screen.getAllByText('Work')).toHaveLength(1);
   });
 });

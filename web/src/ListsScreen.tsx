@@ -29,6 +29,7 @@ export function ListsScreen({
   const [createBusy, setCreateBusy] = useState(false);
   const mountedRef = useRef(false);
   const loadRequestRef = useRef(0);
+  const createRequestRef = useRef(0);
   const createBusyRef = useRef(false);
 
   useEffect(() => {
@@ -38,6 +39,15 @@ export function ListsScreen({
     };
   }, []);
 
+  useEffect(() => {
+    createRequestRef.current += 1;
+    createBusyRef.current = false;
+    setLists([]);
+    setName('');
+    setCreateError('');
+    setCreateBusy(false);
+  }, [token]);
+
   const loadLists = useCallback(async () => {
     const request = ++loadRequestRef.current;
     setLoadState('loading');
@@ -45,7 +55,13 @@ export function ListsScreen({
     try {
       const nextLists = await api.lists(token);
       if (!mountedRef.current || request !== loadRequestRef.current) return;
-      setLists(nextLists);
+      setLists((currentLists) => {
+        const loadedIds = new Set(nextLists.map((list) => list.id));
+        return [
+          ...nextLists,
+          ...currentLists.filter((list) => !loadedIds.has(list.id)),
+        ];
+      });
       setLoadState('ready');
     } catch (error) {
       if (!mountedRef.current || request !== loadRequestRef.current) return;
@@ -65,19 +81,23 @@ export function ListsScreen({
     e.preventDefault();
     const trimmedName = name.trim();
     if (!trimmedName || createBusyRef.current) return;
+    const request = ++createRequestRef.current;
     createBusyRef.current = true;
     setCreateBusy(true);
     setCreateError('');
     try {
       const list = await api.createList(token, trimmedName);
-      if (!mountedRef.current) return;
-      setLists((prev) => [...prev, list]);
+      if (!mountedRef.current || request !== createRequestRef.current) return;
+      setLists((prev) =>
+        prev.some((existing) => existing.id === list.id) ? prev : [...prev, list],
+      );
       setName('');
       setCreateError('');
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || request !== createRequestRef.current) return;
       setCreateError(errorMessage(error));
     } finally {
+      if (request !== createRequestRef.current) return;
       createBusyRef.current = false;
       if (mountedRef.current) setCreateBusy(false);
     }
@@ -120,7 +140,11 @@ export function ListsScreen({
         </form>
         {createError && <ErrorAlert message={createError} compact />}
 
-        {loadState === 'loading' && <p className="loading-state">Loading lists…</p>}
+        {loadState === 'loading' && (
+          <p className="loading-state" role="status" aria-live="polite">
+            Loading lists…
+          </p>
+        )}
         {loadState === 'error' && <ErrorAlert message={loadError} onRetry={loadLists} />}
         {loadState === 'ready' && lists.length === 0 ? (
           <p className="empty">No lists yet — create your first one above.</p>
