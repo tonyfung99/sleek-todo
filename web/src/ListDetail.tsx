@@ -50,11 +50,13 @@ export function ListDetail({
   me,
   list,
   onBack,
+  onUnauthorized,
 }: {
   token: string;
   me: AuthUser;
   list: TodoList;
   onBack: () => void;
+  onUnauthorized?: () => void;
 }) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -73,7 +75,8 @@ export function ListDetail({
   const [shareSuccess, setShareSuccess] = useState<string | null>(null);
   const [openDeps, setOpenDeps] = useState<string | null>(null);
   const [depsByTodo, setDepsByTodo] = useState<Record<string, Todo[]>>({});
-  const [depError, setDepError] = useState<string | null>(null);
+  const [depErrors, setDepErrors] = useState<Record<string, string>>({});
+  const [connectionLost, setConnectionLost] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const saveGenerations = useRef<Record<string, number>>({});
@@ -157,7 +160,18 @@ export function ListDetail({
     void loadTodos();
     const socket = createSocket(token);
     socketRef.current = socket;
-    socket.on('connect', () => socket.emit('list:join', { listId: list.id }));
+    socket.on('connect', () => {
+      setConnectionLost(false);
+      socket.emit('list:join', { listId: list.id });
+    });
+    socket.on('disconnect', () => setConnectionLost(true));
+    socket.on('connect_error', (err: Error & { data?: { status?: number } }) => {
+      if (err.data?.status === 401) {
+        onUnauthorized?.();
+      } else {
+        setConnectionLost(true);
+      }
+    });
     socket.on('presence:update', (p: { viewers: Viewer[] }) => setViewers(p.viewers));
     socket.on('todo:created', (p: { todo: Todo }) =>
       setTodos((prev) => (prev.some((t) => t.id === p.todo.id) ? prev : [...prev, p.todo])),
@@ -414,34 +428,55 @@ export function ListDetail({
   }
 
   async function toggleDeps(todoId: string) {
-    setDepError(null);
+    setDepErrors((prev) => {
+      const next = { ...prev };
+      delete next[todoId];
+      return next;
+    });
     if (openDeps === todoId) {
       setOpenDeps(null);
       return;
     }
     setOpenDeps(todoId);
-    const deps = await api.dependencies(token, todoId);
-    setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+    try {
+      const deps = await api.dependencies(token, todoId);
+      setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+    } catch (err) {
+      setDepErrors((prev) => ({ ...prev, [todoId]: errorMessage(err, 'Could not load dependencies') }));
+    }
   }
 
   async function addDep(todoId: string, dependencyId: string) {
     if (!dependencyId) return;
-    setDepError(null);
+    setDepErrors((prev) => {
+      const next = { ...prev };
+      delete next[todoId];
+      return next;
+    });
     try {
       await api.addDependency(token, todoId, dependencyId);
       const deps = await api.dependencies(token, todoId);
       setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
       refresh();
     } catch (err) {
-      setDepError((err as Error).message);
+      setDepErrors((prev) => ({ ...prev, [todoId]: errorMessage(err, 'Could not add dependency') }));
     }
   }
 
   async function removeDep(todoId: string, depId: string) {
-    await api.removeDependency(token, todoId, depId);
-    const deps = await api.dependencies(token, todoId);
-    setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
-    refresh();
+    setDepErrors((prev) => {
+      const next = { ...prev };
+      delete next[todoId];
+      return next;
+    });
+    try {
+      await api.removeDependency(token, todoId, depId);
+      const deps = await api.dependencies(token, todoId);
+      setDepsByTodo((prev) => ({ ...prev, [todoId]: deps }));
+      refresh();
+    } catch (err) {
+      setDepErrors((prev) => ({ ...prev, [todoId]: errorMessage(err, 'Could not remove dependency') }));
+    }
   }
 
   const canShare = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(collaboratorEmail.trim());
@@ -474,6 +509,12 @@ export function ListDetail({
             ))}
           </div>
         </div>
+
+        {connectionLost && (
+          <div className="connection-status" role="status" aria-live="polite">
+            Live updates disconnected. Reconnecting…
+          </div>
+        )}
 
         {me.id === list.ownerId && (
           <form className="share-form" data-testid="share-form" onSubmit={addEditor}>
@@ -816,7 +857,15 @@ export function ListDetail({
                               ))}
                           </select>
                         </div>
-                        {depError && <span className="error-text">{depError}</span>}
+                        {depErrors[todo.id] && (
+                          <ErrorAlert message={depErrors[todo.id]} compact onDismiss={() =>
+                            setDepErrors((prev) => {
+                              const next = { ...prev };
+                              delete next[todo.id];
+                              return next;
+                            })
+                          } />
+                        )}
                       </div>
                     </div>
                   )}

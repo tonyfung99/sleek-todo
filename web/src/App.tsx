@@ -165,6 +165,7 @@ export function App() {
         me={auth.user}
         list={openList}
         onBack={() => setOpenList(null)}
+        onUnauthorized={() => handleUnauthorized(auth.accessToken)}
       />
     );
   }

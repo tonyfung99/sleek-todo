@@ -43,13 +43,17 @@ const todo = {
   blocked: false,
 };
 
+const onUnauthorized = vi.fn();
+
 function renderDetail(ownerId = 'u1', token = 'tok', listId = 'l1') {
+  onUnauthorized.mockReset();
   return render(
     <ListDetail
       token={token}
       me={{ id: 'u1', email: 'a@x.com', displayName: 'Alice' }}
       list={{ id: listId, name: 'Groceries', ownerId }}
       onBack={() => undefined}
+      onUnauthorized={onUnauthorized}
     />,
   );
 }
@@ -364,5 +368,69 @@ describe('ListDetail', () => {
       expect(alert.classList.contains('error-alert')).toBe(true);
       expect(alert.classList.contains('error-alert-compact')).toBe(true);
     });
+  });
+
+  it('shows a dependency error scoped to its todo row', async () => {
+    apiMocks.addDependency.mockRejectedValue(new Error('Would create a cycle'));
+    const dep = { ...todo, id: 't2', name: 'Other task' };
+    apiMocks.todos.mockResolvedValue([todo, dep]);
+    renderDetail();
+    const row = await screen.findByTestId('todo-row-t1');
+    fireEvent.click(within(row).getByRole('button', { name: 'Deps' }));
+    await waitFor(() => expect(within(row).getByLabelText('Add dependency')).toBeTruthy());
+    fireEvent.change(within(row).getByLabelText('Add dependency'), { target: { value: 't2' } });
+    await waitFor(() =>
+      expect(within(row).getByRole('alert').textContent).toContain('Would create a cycle'),
+    );
+    const otherRow = screen.getByTestId('todo-row-t2');
+    expect(within(otherRow).queryByRole('alert')).toBeNull();
+  });
+
+  it('shows a dependency removal error scoped to its todo row', async () => {
+    apiMocks.removeDependency.mockRejectedValue(new Error('Could not remove dependency'));
+    const dep = { ...todo, id: 't2', name: 'Prereq' };
+    apiMocks.todos.mockResolvedValue([todo, dep]);
+    apiMocks.dependencies.mockResolvedValue([dep]);
+    renderDetail();
+    const row = await screen.findByTestId('todo-row-t1');
+    fireEvent.click(within(row).getByRole('button', { name: 'Deps' }));
+    await waitFor(() => expect(within(row).getByText('Prereq')).toBeTruthy());
+    fireEvent.click(within(row).getByRole('button', { name: 'Remove dependency Prereq' }));
+    await waitFor(() =>
+      expect(within(row).getByRole('alert').textContent).toContain('Could not remove dependency'),
+    );
+  });
+
+  it('shows and clears real-time reconnection status', async () => {
+    renderDetail();
+    await screen.findByDisplayValue('Buy milk');
+    act(() => socketHandlers.disconnect?.(undefined as never));
+    expect(screen.getByRole('status', { name: '' }).textContent).toContain(
+      'Live updates disconnected. Reconnecting…',
+    );
+    act(() => socketHandlers.connect?.(undefined as never));
+    expect(screen.queryByText(/Live updates disconnected/)).toBeNull();
+  });
+
+  it('invokes onUnauthorized for a socket auth error', async () => {
+    renderDetail();
+    await screen.findByDisplayValue('Buy milk');
+    act(() => {
+      const err = Object.assign(new Error('Auth failed'), { data: { status: 401 } });
+      socketHandlers.connect_error?.(err as never);
+    });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Live updates disconnected/)).toBeNull();
+  });
+
+  it('shows connection status for non-auth socket errors', async () => {
+    renderDetail();
+    await screen.findByDisplayValue('Buy milk');
+    act(() => {
+      const err = Object.assign(new Error('Network error'), { data: {} });
+      socketHandlers.connect_error?.(err as never);
+    });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(screen.getByText(/Live updates disconnected/)).toBeTruthy();
   });
 });
