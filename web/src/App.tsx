@@ -34,11 +34,16 @@ function clearSession(): void {
 export function App() {
   const [auth, setAuth] = useState<AuthResult | null>(loadSession);
   const authRef = useRef(auth);
+  const authGenerationRef = useRef(0);
+  const bootstrapAttemptedRef = useRef(false);
+  const bootstrapPromiseRef = useRef<Promise<AuthResult> | null>(null);
+  const recoveryInFlightRef = useRef<Promise<string | null> | null>(null);
   const [openList, setOpenList] = useState<TodoList | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const handleUnauthorized = useCallback((failedToken: string) => {
     if (authRef.current?.accessToken !== failedToken) return;
+    authGenerationRef.current += 1;
     clearTokenRecoveryState();
     authRef.current = null;
     clearSession();
@@ -47,19 +52,32 @@ export function App() {
     setAuthNotice('Your session expired. Please log in again.');
   }, []);
 
-  const recoverSession = useCallback(async (failedToken: string): Promise<string | null> => {
-    if (authRef.current?.accessToken !== failedToken) return null;
-    try {
-      const result = await api.refresh();
-      if (authRef.current?.accessToken !== failedToken) return null;
-      authRef.current = result;
-      saveSession(result);
-      setAuth(result);
-      setAuthNotice(null);
-      return result.accessToken;
-    } catch {
-      return null;
-    }
+  const recoverSession = useCallback((failedToken: string): Promise<string | null> => {
+    if (authRef.current?.accessToken !== failedToken) return Promise.resolve(null);
+    const generation = authGenerationRef.current;
+    let recovery: Promise<string | null>;
+    recovery = (async () => {
+      try {
+        const result = await api.refresh();
+        if (
+          authGenerationRef.current !== generation ||
+          authRef.current?.accessToken !== failedToken
+        ) {
+          return null;
+        }
+        authRef.current = result;
+        saveSession(result);
+        setAuth(result);
+        setAuthNotice(null);
+        return result.accessToken;
+      } catch {
+        return null;
+      }
+    })().finally(() => {
+      if (recoveryInFlightRef.current === recovery) recoveryInFlightRef.current = null;
+    });
+    recoveryInFlightRef.current = recovery;
+    return recovery;
   }, []);
 
   useEffect(() => {
@@ -72,12 +90,21 @@ export function App() {
 
   // No stored session? Try to restore one from the httpOnly refresh cookie.
   useEffect(() => {
-    if (auth) return;
-    let cancelled = false;
-    api
-      .refresh()
+    if (authRef.current) return;
+    const generation = authGenerationRef.current;
+    if (!bootstrapAttemptedRef.current) {
+      bootstrapAttemptedRef.current = true;
+      bootstrapPromiseRef.current = api.refresh();
+    }
+    const bootstrap = bootstrapPromiseRef.current;
+    if (!bootstrap) return;
+    let active = true;
+    bootstrap
       .then((result) => {
-        if (cancelled) return;
+        if (!active || authGenerationRef.current !== generation || authRef.current !== null) {
+          return;
+        }
+        authGenerationRef.current += 1;
         clearTokenRecoveryState();
         authRef.current = result;
         saveSession(result);
@@ -87,11 +114,12 @@ export function App() {
         /* no valid refresh cookie — stay on the auth screen */
       });
     return () => {
-      cancelled = true;
+      active = false;
     };
-  }, [auth]);
+  }, []);
 
   function handleAuth(result: AuthResult) {
+    authGenerationRef.current += 1;
     clearTokenRecoveryState();
     setAuthNotice(null);
     authRef.current = result;
@@ -100,17 +128,20 @@ export function App() {
   }
 
   async function handleLogout() {
-    try {
-      await api.logout();
-    } catch {
-      /* ignore network errors on logout */
-    }
+    const recovery = recoveryInFlightRef.current;
+    authGenerationRef.current += 1;
     clearTokenRecoveryState();
     setAuthNotice(null);
     authRef.current = null;
     clearSession();
     setOpenList(null);
     setAuth(null);
+    await recovery;
+    try {
+      await api.logout();
+    } catch {
+      /* ignore network errors on logout */
+    }
   }
 
   if (!auth) {

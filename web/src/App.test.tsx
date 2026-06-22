@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 
@@ -92,17 +93,9 @@ describe('App session recovery', () => {
   });
 
   it('clears stored auth and returns an expired session to login with an alert', async () => {
-    const refresh = deferredPromise<never>();
-    apiMocks.refresh.mockReturnValue(refresh.promise);
     await renderStoredSession();
 
     expireSession();
-
-    await waitFor(() => expect(apiMocks.refresh).toHaveBeenCalledTimes(1));
-    await act(async () => {
-      refresh.reject(new Error('no refresh session'));
-      await refresh.promise.catch(() => undefined);
-    });
 
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
@@ -110,6 +103,7 @@ describe('App session recovery', () => {
     expect(screen.getByRole('alert').textContent).toBe(
       'Your session expired. Please log in again.',
     );
+    expect(apiMocks.refresh).not.toHaveBeenCalled();
   });
 
   it('silently recovers a stored session and returns the exact replacement token', async () => {
@@ -146,6 +140,7 @@ describe('App session recovery', () => {
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
     expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
+    expect(apiMocks.refresh).toHaveBeenCalledTimes(1);
   });
 
   it('does not recover an old token after a successful manual login', async () => {
@@ -280,15 +275,10 @@ describe('App session recovery', () => {
     expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
   });
 
-  it('clears an auth notice on explicit logout even when logout fails', async () => {
-    apiMocks.refresh
-      .mockResolvedValueOnce(newSession)
-      .mockReturnValue(new Promise(() => undefined));
+  it('logs out locally before a failed logout request and does not bootstrap again', async () => {
     apiMocks.logout.mockRejectedValue(new Error('offline'));
     await renderStoredSession();
-    expireSession();
 
-    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
     apiMocks.clearTokenRecoveryState.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
 
@@ -297,6 +287,8 @@ describe('App session recovery', () => {
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
     expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(apiMocks.logout).toHaveBeenCalledTimes(1));
+    expect(apiMocks.refresh).not.toHaveBeenCalled();
   });
 
   it('clears recovery state before adopting an initial refresh-cookie session', async () => {
@@ -307,6 +299,71 @@ describe('App session recovery', () => {
     expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
     expect(localStorage.getItem('token')).toBe(newSession.accessToken);
     expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one bootstrap refresh across StrictMode effect replay', async () => {
+    const refresh = deferredPromise<typeof newSession>();
+    apiMocks.refresh.mockReturnValue(refresh.promise);
+
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(apiMocks.refresh).toHaveBeenCalledTimes(1));
+
+    await act(async () => refresh.resolve(newSession));
+
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+    expect(apiMocks.refresh).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+  });
+
+  it('does not let late bootstrap overwrite a manual login', async () => {
+    const refresh = deferredPromise<typeof storedSession>();
+    apiMocks.refresh.mockReturnValue(refresh.promise);
+    apiMocks.login.mockResolvedValue(newSession);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: newSession.user.email },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery staple' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+
+    await act(async () => refresh.resolve(storedSession));
+
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+    expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
+  });
+
+  it('logs out immediately and waits for recovery before revoking the server session', async () => {
+    const refresh = deferredPromise<typeof newSession>();
+    const logout = deferredPromise<void>();
+    apiMocks.refresh.mockReturnValue(refresh.promise);
+    apiMocks.logout.mockReturnValue(logout.promise);
+    await renderStoredSession();
+
+    const recovery = apiMocks.tokenRecoveryHandler!(storedSession.accessToken);
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+
+    expect(screen.getByRole('heading', { name: 'Create your account' })).toBeTruthy();
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(apiMocks.logout).not.toHaveBeenCalled();
+
+    await act(async () => refresh.resolve(newSession));
+    await expect(recovery).resolves.toBeNull();
+    await waitFor(() => expect(apiMocks.logout).toHaveBeenCalledTimes(1));
+    await act(async () => logout.resolve());
+
+    expect(screen.getByRole('heading', { name: 'Create your account' })).toBeTruthy();
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(localStorage.getItem('user')).toBeNull();
+    expect(apiMocks.refresh).toHaveBeenCalledTimes(1);
   });
 
   it('releases only its own recovery-handler registration on cleanup', async () => {
