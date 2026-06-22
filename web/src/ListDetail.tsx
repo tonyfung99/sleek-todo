@@ -12,7 +12,7 @@ import {
   TodoStatus,
   Viewer,
 } from './types';
-import { BackIcon, LockIcon, PlusIcon, TrashIcon } from './icons';
+import { BackIcon, CheckIcon, LockIcon, PlusIcon, TrashIcon } from './icons';
 
 const STATUSES: TodoStatus[] = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'ARCHIVED'];
 const STATUS_LABEL: Record<TodoStatus, string> = {
@@ -30,6 +30,11 @@ const PRIORITY_LABEL: Record<TodoPriority, string> = {
 
 function toDateInput(iso: string | null): string {
   return iso ? iso.slice(0, 10) : '';
+}
+
+function formatDue(iso: string | null): string {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function initials(name: string): string {
@@ -70,9 +75,15 @@ export function ListDetail({
     socket.on('todo:created', (p: { todo: Todo }) =>
       setTodos((prev) => (prev.some((t) => t.id === p.todo.id) ? prev : [...prev, p.todo])),
     );
-    socket.on('todo:updated', (p: { todo: Todo }) =>
-      setTodos((prev) => prev.map((t) => (t.id === p.todo.id ? p.todo : t))),
-    );
+    socket.on('todo:updated', (p: { todo: Todo }) => {
+      setTodos((prev) => prev.map((t) => (t.id === p.todo.id ? p.todo : t)));
+      // A dependency's status may have changed — invalidate cached dep rows.
+      setDepsByTodo((prev) => {
+        const next = { ...prev };
+        delete next[p.todo.id];
+        return next;
+      });
+    });
     socket.on('todo:deleted', (p: { todoId: string }) =>
       setTodos((prev) => prev.filter((t) => t.id !== p.todoId)),
     );
@@ -91,6 +102,18 @@ export function ListDetail({
       socket.disconnect();
     };
   }, [token, list.id]);
+
+  // Eagerly load dependencies for blocked todos so we can show "Blocked by …".
+  useEffect(() => {
+    todos.forEach((t) => {
+      if (t.blocked && depsByTodo[t.id] === undefined) {
+        api
+          .dependencies(token, t.id)
+          .then((deps) => setDepsByTodo((prev) => ({ ...prev, [t.id]: deps })))
+          .catch(() => undefined);
+      }
+    });
+  }, [todos, token, depsByTodo]);
 
   function lockedByOther(todoId: string): LockGranted | undefined {
     const lock = locks[todoId];
@@ -113,18 +136,24 @@ export function ListDetail({
     socketRef.current?.emit('editing:stop', { listId: list.id, todoId });
   }
 
-  function onNameChange(todo: Todo, name: string) {
-    setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, name } : t)));
-    clearTimeout(saveTimers.current[todo.id]);
-    saveTimers.current[todo.id] = setTimeout(async () => {
+  // Debounced text autosave shared by name + description.
+  function autosaveText(
+    todo: Todo,
+    field: 'name' | 'description',
+    value: string,
+  ) {
+    setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, [field]: value } : t)));
+    const key = `${todo.id}:${field}`;
+    clearTimeout(saveTimers.current[key]);
+    saveTimers.current[key] = setTimeout(async () => {
       try {
-        const saved = await api.updateTodo(token, todo.id, todo.version, { name });
+        const payload = field === 'description' ? { description: value || null } : { name: value };
+        const saved = await api.updateTodo(token, todo.id, todo.version, payload);
         setTodos((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
       } catch {
-        // 409 / conflict: refetch authoritative state.
         api.todos(token, list.id).then(setTodos);
       }
-    }, 400);
+    }, 450);
   }
 
   async function patchField(
@@ -142,6 +171,11 @@ export function ListDetail({
     } finally {
       stopEditing(todo.id);
     }
+  }
+
+  function toggleComplete(todo: Todo) {
+    const next: TodoStatus = todo.status === 'COMPLETED' ? 'NOT_STARTED' : 'COMPLETED';
+    return patchField(todo, { status: next });
   }
 
   async function remove(todo: Todo) {
@@ -249,111 +283,92 @@ export function ListDetail({
             {todos.map((todo) => {
               const lock = lockedByOther(todo.id);
               const disabled = Boolean(lock);
+              const done = todo.status === 'COMPLETED';
+              const unmet = (depsByTodo[todo.id] ?? []).filter((d) => d.status !== 'COMPLETED');
               return (
-                <li key={todo.id} data-testid={`todo-row-${todo.id}`} className="todo-row">
-                  <input
-                    data-testid={`todo-name-${todo.id}`}
-                    className="todo-name"
-                    value={todo.name}
-                    disabled={disabled}
-                    onFocus={() => startEditing(todo.id)}
-                    onBlur={() => stopEditing(todo.id)}
-                    onChange={(e) => onNameChange(todo, e.target.value)}
-                    aria-label="Todo name"
-                  />
-                  <div className="todo-meta">
-                    <select
-                      className={`select status-${todo.status}`}
-                      value={todo.status}
+                <li
+                  key={todo.id}
+                  data-testid={`todo-row-${todo.id}`}
+                  className={`todo-row${done ? ' is-done' : ''}`}
+                >
+                  <div className="todo-main">
+                    <button
+                      type="button"
+                      data-testid={`todo-check-${todo.id}`}
+                      className={`check check-${todo.priority}${done ? ' checked' : ''}`}
                       disabled={disabled}
-                      onChange={(e) => patchField(todo, { status: e.target.value as TodoStatus })}
-                      aria-label="Status"
+                      onClick={() => toggleComplete(todo)}
+                      aria-label={done ? 'Mark as not done' : 'Mark as done'}
+                      aria-pressed={done}
+                      title={done ? 'Completed' : 'Mark complete'}
                     >
-                      {STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {STATUS_LABEL[s]}
-                        </option>
-                      ))}
-                    </select>
+                      {done && <CheckIcon size={13} />}
+                    </button>
 
-                    <select
-                      className={`select priority-${todo.priority}`}
-                      value={todo.priority}
-                      disabled={disabled}
-                      onChange={(e) =>
-                        patchField(todo, { priority: e.target.value as TodoPriority })
-                      }
-                      aria-label="Priority"
-                    >
-                      {PRIORITIES.map((p) => (
-                        <option key={p} value={p}>
-                          {PRIORITY_LABEL[p]}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="todo-body">
+                      <input
+                        data-testid={`todo-name-${todo.id}`}
+                        className="todo-name"
+                        value={todo.name}
+                        disabled={disabled}
+                        onFocus={() => startEditing(todo.id)}
+                        onBlur={() => stopEditing(todo.id)}
+                        onChange={(e) => autosaveText(todo, 'name', e.target.value)}
+                        aria-label="Todo name"
+                      />
+                      <input
+                        data-testid={`todo-desc-${todo.id}`}
+                        className="todo-desc"
+                        value={todo.description ?? ''}
+                        placeholder="Add description"
+                        disabled={disabled}
+                        onFocus={() => startEditing(todo.id)}
+                        onBlur={() => stopEditing(todo.id)}
+                        onChange={(e) => autosaveText(todo, 'description', e.target.value)}
+                        aria-label="Description"
+                      />
 
-                    <input
-                      type="date"
-                      className="input date-input"
-                      value={toDateInput(todo.dueDate)}
-                      disabled={disabled}
-                      onChange={(e) =>
-                        patchField(todo, {
-                          dueDate: e.target.value
-                            ? new Date(e.target.value).toISOString()
-                            : null,
-                        })
-                      }
-                      aria-label="Due date"
-                    />
-
-                    <select
-                      className="select"
-                      value={todo.recurrenceUnit ?? 'NONE'}
-                      disabled={disabled || !todo.dueDate}
-                      title={!todo.dueDate ? 'Set a due date to enable repeat' : 'Repeat'}
-                      onChange={(e) =>
-                        patchField(
-                          todo,
-                          e.target.value === 'NONE'
-                            ? { recurrenceUnit: null, recurrenceInterval: null }
-                            : {
-                                recurrenceUnit: e.target.value as RecurrenceUnit,
-                                recurrenceInterval: 1,
-                              },
-                        )
-                      }
-                      aria-label="Repeat"
-                    >
-                      <option value="NONE">No repeat</option>
-                      <option value="DAY">Daily</option>
-                      <option value="WEEK">Weekly</option>
-                      <option value="MONTH">Monthly</option>
-                    </select>
-
-                    {todo.blocked && (
-                      <span className="blocked-badge" data-testid={`blocked-${todo.id}`}>
-                        Blocked
-                      </span>
-                    )}
-
-                    {lock && (
-                      <span className="lock-badge" data-testid={`lock-badge-${todo.id}`}>
-                        <LockIcon size={12} />
-                        {lock.displayName} is editing
-                      </span>
-                    )}
-
-                    <span className="spacer" />
+                      <div className="todo-tags">
+                        {todo.dueDate && (
+                          <span className="tag tag-due">{formatDue(todo.dueDate)}</span>
+                        )}
+                        {todo.priority !== 'MEDIUM' && (
+                          <span className={`tag priority-${todo.priority}`}>
+                            {PRIORITY_LABEL[todo.priority]}
+                          </span>
+                        )}
+                        {todo.recurrenceUnit && (
+                          <span className="tag tag-repeat">
+                            {todo.recurrenceUnit === 'DAY'
+                              ? 'Daily'
+                              : todo.recurrenceUnit === 'WEEK'
+                                ? 'Weekly'
+                                : 'Monthly'}
+                          </span>
+                        )}
+                        {todo.blocked && (
+                          <span className="tag tag-blocked" data-testid={`blocked-${todo.id}`}>
+                            Blocked
+                            {unmet.length > 0 && ` by ${unmet.map((d) => d.name).join(', ')}`}
+                          </span>
+                        )}
+                        {lock && (
+                          <span className="tag tag-lock" data-testid={`lock-badge-${todo.id}`}>
+                            <LockIcon size={11} />
+                            {lock.displayName} is editing
+                          </span>
+                        )}
+                      </div>
+                    </div>
 
                     <button
-                      className="btn btn-ghost btn-sm"
+                      type="button"
+                      className={`deps-toggle${openDeps === todo.id ? ' active' : ''}`}
                       onClick={() => toggleDeps(todo.id)}
                       aria-expanded={openDeps === todo.id}
                     >
                       Deps
                     </button>
-
                     <button
                       data-testid={`todo-delete-${todo.id}`}
                       className="btn-icon-danger"
@@ -368,45 +383,133 @@ export function ListDetail({
 
                   {openDeps === todo.id && (
                     <div className="deps-panel">
-                      <div className="deps-chips">
-                        {(depsByTodo[todo.id] ?? []).length === 0 ? (
-                          <span className="deps-empty">No dependencies</span>
-                        ) : (
-                          (depsByTodo[todo.id] ?? []).map((d) => (
-                            <span key={d.id} className="dep-chip">
-                              {d.name}
-                              <span className={`dep-dot status-${d.status}`} title={d.status} />
-                              <button
-                                className="dep-remove"
-                                onClick={() => removeDep(todo.id, d.id)}
-                                aria-label={`Remove dependency ${d.name}`}
-                              >
-                                ×
-                              </button>
-                            </span>
-                          ))
-                        )}
+                      <div className="deps-controls">
+                        <label className="deps-control">
+                          <span className="deps-control-label">Status</span>
+                          <select
+                            className={`select status-${todo.status}`}
+                            value={todo.status}
+                            disabled={disabled}
+                            onChange={(e) =>
+                              patchField(todo, { status: e.target.value as TodoStatus })
+                            }
+                            aria-label="Status"
+                          >
+                            {STATUSES.map((s) => (
+                              <option key={s} value={s}>
+                                {STATUS_LABEL[s]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="deps-control">
+                          <span className="deps-control-label">Priority</span>
+                          <select
+                            className={`select priority-${todo.priority}`}
+                            value={todo.priority}
+                            disabled={disabled}
+                            onChange={(e) =>
+                              patchField(todo, { priority: e.target.value as TodoPriority })
+                            }
+                            aria-label="Priority"
+                          >
+                            {PRIORITIES.map((p) => (
+                              <option key={p} value={p}>
+                                {PRIORITY_LABEL[p]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="deps-control">
+                          <span className="deps-control-label">Due</span>
+                          <input
+                            type="date"
+                            className="input date-input"
+                            value={toDateInput(todo.dueDate)}
+                            disabled={disabled}
+                            onChange={(e) =>
+                              patchField(todo, {
+                                dueDate: e.target.value
+                                  ? new Date(e.target.value).toISOString()
+                                  : null,
+                              })
+                            }
+                            aria-label="Due date"
+                          />
+                        </label>
+                        <label className="deps-control">
+                          <span className="deps-control-label">Repeat</span>
+                          <select
+                            className="select"
+                            value={todo.recurrenceUnit ?? 'NONE'}
+                            disabled={disabled || !todo.dueDate}
+                            title={!todo.dueDate ? 'Set a due date to enable repeat' : 'Repeat'}
+                            onChange={(e) =>
+                              patchField(
+                                todo,
+                                e.target.value === 'NONE'
+                                  ? { recurrenceUnit: null, recurrenceInterval: null }
+                                  : {
+                                      recurrenceUnit: e.target.value as RecurrenceUnit,
+                                      recurrenceInterval: 1,
+                                    },
+                              )
+                            }
+                            aria-label="Repeat"
+                          >
+                            <option value="NONE">No repeat</option>
+                            <option value="DAY">Daily</option>
+                            <option value="WEEK">Weekly</option>
+                            <option value="MONTH">Monthly</option>
+                          </select>
+                        </label>
                       </div>
-                      <select
-                        className="select"
-                        value=""
-                        onChange={(e) => addDep(todo.id, e.target.value)}
-                        aria-label="Add dependency"
-                      >
-                        <option value="">Add dependency…</option>
-                        {todos
-                          .filter(
-                            (t) =>
-                              t.id !== todo.id &&
-                              !(depsByTodo[todo.id] ?? []).some((d) => d.id === t.id),
-                          )
-                          .map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                      </select>
-                      {depError && <span className="error-text">{depError}</span>}
+
+                      <div className="deps-section">
+                        <span className="deps-section-label">Depends on</span>
+                        <div className="deps-chips">
+                          {(depsByTodo[todo.id] ?? []).length === 0 ? (
+                            <span className="deps-empty">No dependencies</span>
+                          ) : (
+                            (depsByTodo[todo.id] ?? []).map((d) => (
+                              <span
+                                key={d.id}
+                                className={`dep-chip${d.status === 'COMPLETED' ? ' met' : ''}`}
+                              >
+                                <span className={`dep-dot status-${d.status}`} title={d.status} />
+                                {d.name}
+                                <button
+                                  className="dep-remove"
+                                  onClick={() => removeDep(todo.id, d.id)}
+                                  aria-label={`Remove dependency ${d.name}`}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))
+                          )}
+                          <select
+                            className="select dep-add"
+                            value=""
+                            onChange={(e) => addDep(todo.id, e.target.value)}
+                            aria-label="Add dependency"
+                          >
+                            <option value="">+ Add dependency…</option>
+                            {todos
+                              .filter(
+                                (t) =>
+                                  t.id !== todo.id &&
+                                  !(depsByTodo[todo.id] ?? []).some((d) => d.id === t.id),
+                              )
+                              .map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                        {depError && <span className="error-text">{depError}</span>}
+                      </div>
                     </div>
                   )}
                 </li>
