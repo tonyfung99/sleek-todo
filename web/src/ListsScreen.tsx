@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
-import { TodoList } from './types';
+import { AuthUser, TodoList } from './types';
 import { CheckIcon, ListIcon, PlusIcon } from './icons';
 import { ErrorAlert } from './ErrorAlert';
 
@@ -14,10 +14,12 @@ function errorMessage(error: unknown) {
 
 export function ListsScreen({
   token,
+  me,
   onOpen,
   onLogout,
 }: {
   token: string;
+  me: AuthUser;
   onOpen: (list: TodoList) => void;
   onLogout: () => void;
 }) {
@@ -113,9 +115,12 @@ export function ListsScreen({
             </span>
             SleekTodo
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={onLogout}>
-            Log out
-          </button>
+          <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+            <span className="user-label">{me.displayName}</span>
+            <button className="btn btn-ghost btn-sm" onClick={onLogout}>
+              Log out
+            </button>
+          </div>
         </div>
 
         <h1 className="title">My lists</h1>

@@ -376,6 +376,12 @@ h2 {
   align-items: center;
 }
 
+.user-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-fg-muted);
+}
+
 .list-stack {
   list-style: none;
   margin: 20px 0 0;

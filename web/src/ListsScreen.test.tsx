@@ -28,8 +28,10 @@ function deferredPromise<T>() {
 const token = 'token-1';
 const groceries: TodoList = { id: 'list-1', name: 'Groceries', ownerId: 'user-1' };
 
+const me = { id: 'user-1', email: 'alice@x.com', displayName: 'Alice' };
+
 function renderScreen() {
-  render(<ListsScreen token={token} onOpen={vi.fn()} onLogout={vi.fn()} />);
+  render(<ListsScreen token={token} me={me} onOpen={vi.fn()} onLogout={vi.fn()} />);
 }
 
 describe('ListsScreen', () => {
@@ -213,7 +215,7 @@ describe('ListsScreen', () => {
       .mockReturnValueOnce(oldCreation.promise)
       .mockReturnValueOnce(newCreation.promise);
     const view = render(
-      <ListsScreen token="old-token" onOpen={vi.fn()} onLogout={vi.fn()} />,
+      <ListsScreen token="old-token" me={me} onOpen={vi.fn()} onLogout={vi.fn()} />,
     );
     await screen.findByText(/No lists yet/);
 
@@ -223,7 +225,7 @@ describe('ListsScreen', () => {
     expect(screen.getByRole('button', { name: 'Creating…' })).toBeTruthy();
 
     view.rerender(
-      <ListsScreen token="new-token" onOpen={vi.fn()} onLogout={vi.fn()} />,
+      <ListsScreen token="new-token" me={me} onOpen={vi.fn()} onLogout={vi.fn()} />,
     );
     await waitFor(() => expect(apiMocks.lists).toHaveBeenCalledWith('new-token'));
     expect((screen.getByLabelText('New list name') as HTMLInputElement).value).toBe('');

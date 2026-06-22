@@ -169,5 +169,5 @@ export function App() {
       />
     );
   }
-  return <ListsScreen token={auth.accessToken} onOpen={setOpenList} onLogout={handleLogout} />;
+  return <ListsScreen token={auth.accessToken} me={auth.user} onOpen={setOpenList} onLogout={handleLogout} />;
 }
