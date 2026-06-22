@@ -1,7 +1,16 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { TodoList } from './types';
 import { CheckIcon, ListIcon, PlusIcon } from './icons';
+import { ErrorAlert } from './ErrorAlert';
+
+type LoadState = 'loading' | 'ready' | 'error';
+
+function errorMessage(error: unknown) {
+  return error instanceof Error
+    ? error.message
+    : 'Something went wrong. Please try again.';
+}
 
 export function ListsScreen({
   token,
@@ -14,21 +23,64 @@ export function ListsScreen({
 }) {
   const [lists, setLists] = useState<TodoList[]>([]);
   const [name, setName] = useState('');
-  const [loaded, setLoaded] = useState(false);
+  const [loadState, setLoadState] = useState<LoadState>('loading');
+  const [loadError, setLoadError] = useState('');
+  const [createError, setCreateError] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
+  const mountedRef = useRef(false);
+  const loadRequestRef = useRef(0);
+  const createBusyRef = useRef(false);
 
   useEffect(() => {
-    api.lists(token).then((l) => {
-      setLists(l);
-      setLoaded(true);
-    });
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const loadLists = useCallback(async () => {
+    const request = ++loadRequestRef.current;
+    setLoadState('loading');
+    setLoadError('');
+    try {
+      const nextLists = await api.lists(token);
+      if (!mountedRef.current || request !== loadRequestRef.current) return;
+      setLists(nextLists);
+      setLoadState('ready');
+    } catch (error) {
+      if (!mountedRef.current || request !== loadRequestRef.current) return;
+      setLoadError(errorMessage(error));
+      setLoadState('error');
+    }
   }, [token]);
+
+  useEffect(() => {
+    void loadLists();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadLists]);
 
   async function create(e: FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
-    const list = await api.createList(token, name.trim());
-    setLists((prev) => [...prev, list]);
-    setName('');
+    const trimmedName = name.trim();
+    if (!trimmedName || createBusyRef.current) return;
+    createBusyRef.current = true;
+    setCreateBusy(true);
+    setCreateError('');
+    try {
+      const list = await api.createList(token, trimmedName);
+      if (!mountedRef.current) return;
+      setLists((prev) => [...prev, list]);
+      setName('');
+      setCreateError('');
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setCreateError(errorMessage(error));
+    } finally {
+      createBusyRef.current = false;
+      if (mountedRef.current) setCreateBusy(false);
+    }
   }
 
   return (
@@ -57,15 +109,22 @@ export function ListsScreen({
             onChange={(e) => setName(e.target.value)}
             aria-label="New list name"
           />
-          <button type="submit" className="btn btn-primary" disabled={!name.trim()}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!name.trim() || createBusy}
+          >
             <PlusIcon size={16} />
-            Create
+            {createBusy ? 'Creating…' : 'Create'}
           </button>
         </form>
+        {createError && <ErrorAlert message={createError} compact />}
 
-        {loaded && lists.length === 0 ? (
+        {loadState === 'loading' && <p className="loading-state">Loading lists…</p>}
+        {loadState === 'error' && <ErrorAlert message={loadError} onRetry={loadLists} />}
+        {loadState === 'ready' && lists.length === 0 ? (
           <p className="empty">No lists yet — create your first one above.</p>
-        ) : (
+        ) : loadState === 'ready' ? (
           <ul className="list-stack">
             {lists.map((l) => (
               <li key={l.id}>
@@ -80,7 +139,7 @@ export function ListsScreen({
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
       </div>
     </main>
   );
