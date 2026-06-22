@@ -16,11 +16,15 @@ import { UsersModule } from '../users/users.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      url: process.env.DATABASE_URL,
-      autoLoadEntities: true,
-      synchronize: true,
+    TypeOrmModule.forRootAsync({
+      // Lazy factory: reads env at module-init time (after int-specs set
+      // process.env in beforeAll), not at import/decorator-eval time.
+      useFactory: () => ({
+        type: 'postgres',
+        url: process.env.DATABASE_URL,
+        autoLoadEntities: true,
+        synchronize: true,
+      }),
     }),
     RedisModule,
     HealthModule,
