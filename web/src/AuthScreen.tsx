@@ -1,6 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { api } from './api';
 import { AuthResult } from './types';
+import { CheckIcon } from './icons';
 
 export function AuthScreen({ onAuth }: { onAuth: (r: AuthResult) => void }) {
   const [mode, setMode] = useState<'login' | 'register'>('register');
@@ -8,10 +9,12 @@ export function AuthScreen({ onAuth }: { onAuth: (r: AuthResult) => void }) {
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    setBusy(true);
     try {
       const result =
         mode === 'register'
@@ -20,35 +23,97 @@ export function AuthScreen({ onAuth }: { onAuth: (r: AuthResult) => void }) {
       onAuth(result);
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <form onSubmit={submit} style={{ maxWidth: 320, margin: '64px auto', display: 'grid', gap: 8 }}>
-      <h2>SleekTodo — {mode === 'register' ? 'Register' : 'Login'}</h2>
-      {mode === 'register' && (
-        <input
-          placeholder="Display name"
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-        />
-      )}
-      <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-      <input
-        placeholder="Password"
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      <button type="submit">{mode === 'register' ? 'Create account' : 'Log in'}</button>
-      {error && <p style={{ color: 'crimson' }}>{error}</p>}
-      <button
-        type="button"
-        onClick={() => setMode(mode === 'register' ? 'login' : 'register')}
-        style={{ background: 'none', border: 'none', color: '#3b82f6', cursor: 'pointer' }}
-      >
-        {mode === 'register' ? 'Have an account? Log in' : 'Need an account? Register'}
-      </button>
-    </form>
+    <main className="page">
+      <div className="center-narrow">
+        <div className="brand">
+          <span className="brand-mark">
+            <CheckIcon size={18} />
+          </span>
+          SleekTodo
+        </div>
+        <h1 className="title" style={{ marginTop: 28 }}>
+          {mode === 'register' ? 'Create your account' : 'Welcome back'}
+        </h1>
+        <p className="subtitle">
+          {mode === 'register'
+            ? 'Collaborate on shared lists in real time.'
+            : 'Sign in to your shared lists.'}
+        </p>
+
+        <form onSubmit={submit} className="auth-form" noValidate>
+          {mode === 'register' && (
+            <div className="field">
+              <label className="label" htmlFor="displayName">
+                Display name
+              </label>
+              <input
+                id="displayName"
+                className="input"
+                placeholder="Ada Lovelace"
+                autoComplete="name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+              />
+            </div>
+          )}
+          <div className="field">
+            <label className="label" htmlFor="email">
+              Email
+            </label>
+            <input
+              id="email"
+              className="input"
+              type="email"
+              placeholder="you@example.com"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label className="label" htmlFor="password">
+              Password
+            </label>
+            <input
+              id="password"
+              className="input"
+              type="password"
+              placeholder="At least 8 characters"
+              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Log in'}
+          </button>
+          {error && (
+            <p className="error-text" role="alert">
+              {error}
+            </p>
+          )}
+        </form>
+
+        <p className="muted-row" style={{ marginTop: 18 }}>
+          {mode === 'register' ? 'Already have an account?' : 'Need an account?'}{' '}
+          <button
+            type="button"
+            className="btn-link"
+            onClick={() => {
+              setError(null);
+              setMode(mode === 'register' ? 'login' : 'register');
+            }}
+          >
+            {mode === 'register' ? 'Log in' : 'Register'}
+          </button>
+        </p>
+      </div>
+    </main>
   );
 }
