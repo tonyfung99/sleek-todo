@@ -9,6 +9,8 @@ const apiMocks = vi.hoisted(() => ({
   logout: vi.fn(),
   lists: vi.fn(),
   unauthorizedHandler: null as ((failedToken: string) => void) | null,
+  tokenRecoveryHandler: null as ((failedToken: string) => Promise<string | null>) | null,
+  clearTokenRecoveryState: vi.fn(),
 }));
 
 vi.mock('./api', () => ({
@@ -25,6 +27,13 @@ vi.mock('./api', () => ({
       if (apiMocks.unauthorizedHandler === handler) apiMocks.unauthorizedHandler = null;
     };
   },
+  setTokenRecoveryHandler: (handler: ((failedToken: string) => Promise<string | null>) | null) => {
+    apiMocks.tokenRecoveryHandler = handler;
+    return () => {
+      if (apiMocks.tokenRecoveryHandler === handler) apiMocks.tokenRecoveryHandler = null;
+    };
+  },
+  clearTokenRecoveryState: apiMocks.clearTokenRecoveryState,
 }));
 
 const storedSession = {
@@ -38,11 +47,13 @@ const newSession = {
 };
 
 function deferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((_, rejectPromise) => {
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
     reject = rejectPromise;
   });
-  return { promise, reject };
+  return { promise, resolve, reject };
 }
 
 function storeSession() {
@@ -55,6 +66,7 @@ async function renderStoredSession() {
   render(<App />);
   expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
   await waitFor(() => expect(apiMocks.unauthorizedHandler).not.toBeNull());
+  await waitFor(() => expect(apiMocks.tokenRecoveryHandler).not.toBeNull());
 }
 
 function expireSession(token = storedSession.accessToken) {
@@ -70,6 +82,8 @@ describe('App session recovery', () => {
     apiMocks.logout.mockReset().mockResolvedValue(undefined);
     apiMocks.lists.mockReset().mockResolvedValue([]);
     apiMocks.unauthorizedHandler = null;
+    apiMocks.tokenRecoveryHandler = null;
+    apiMocks.clearTokenRecoveryState.mockReset();
   });
 
   afterEach(() => {
@@ -98,6 +112,91 @@ describe('App session recovery', () => {
     );
   });
 
+  it('silently recovers a stored session and returns the exact replacement token', async () => {
+    apiMocks.refresh.mockResolvedValue(newSession);
+    await renderStoredSession();
+
+    const recoveredToken = await act(() =>
+      apiMocks.tokenRecoveryHandler!(storedSession.accessToken),
+    );
+
+    expect(recoveredToken).toBe(newSession.accessToken);
+    expect(apiMocks.refresh).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+    expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
+    expect(screen.getByRole('heading', { name: 'My lists' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(apiMocks.clearTokenRecoveryState).not.toHaveBeenCalled();
+  });
+
+  it('returns null after failed recovery and terminally expires the matching session', async () => {
+    await renderStoredSession();
+
+    const recoveredToken = await act(() =>
+      apiMocks.tokenRecoveryHandler!(storedSession.accessToken),
+    );
+    expect(recoveredToken).toBeNull();
+
+    expireSession(storedSession.accessToken);
+
+    expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Your session expired. Please log in again.',
+    );
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(localStorage.getItem('user')).toBeNull();
+    expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not recover an old token after a successful manual login', async () => {
+    apiMocks.login.mockResolvedValue(newSession);
+    await renderStoredSession();
+    expireSession();
+
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: newSession.user.email },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery staple' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+    apiMocks.refresh.mockClear();
+
+    const recoveredToken = await act(() =>
+      apiMocks.tokenRecoveryHandler!(storedSession.accessToken),
+    );
+
+    expect(recoveredToken).toBeNull();
+    expect(apiMocks.refresh).not.toHaveBeenCalled();
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+    expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
+  });
+
+  it('does not let late recovery overwrite a newer manual login', async () => {
+    const refresh = deferredPromise<typeof storedSession>();
+    apiMocks.refresh.mockReturnValue(refresh.promise);
+    apiMocks.login.mockResolvedValue(newSession);
+    await renderStoredSession();
+
+    const recovery = apiMocks.tokenRecoveryHandler!(storedSession.accessToken);
+    expireSession();
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: newSession.user.email },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery staple' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+
+    await act(async () => refresh.resolve(storedSession));
+
+    await expect(recovery).resolves.toBeNull();
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+    expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
+  });
+
   it('keeps the logged-out expired state stable when notified twice', async () => {
     await renderStoredSession();
 
@@ -123,12 +222,14 @@ describe('App session recovery', () => {
     fireEvent.change(screen.getByLabelText('Password'), {
       target: { value: 'correct horse battery staple' },
     });
+    apiMocks.clearTokenRecoveryState.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
 
     expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
     expect(localStorage.getItem('token')).toBe(newSession.accessToken);
     expect(localStorage.getItem('user')).toBe(JSON.stringify(newSession.user));
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a delayed unauthorized response from the old token after login', async () => {
@@ -167,6 +268,7 @@ describe('App session recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
     expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
 
+    apiMocks.clearTokenRecoveryState.mockClear();
     expireSession(newSession.accessToken);
 
     expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeTruthy();
@@ -175,6 +277,7 @@ describe('App session recovery', () => {
     );
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
+    expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
   });
 
   it('clears an auth notice on explicit logout even when logout fails', async () => {
@@ -186,11 +289,35 @@ describe('App session recovery', () => {
     expireSession();
 
     expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+    apiMocks.clearTokenRecoveryState.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
 
     expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('user')).toBeNull();
+    expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears recovery state before adopting an initial refresh-cookie session', async () => {
+    apiMocks.refresh.mockResolvedValue(newSession);
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'My lists' })).toBeTruthy();
+    expect(localStorage.getItem('token')).toBe(newSession.accessToken);
+    expect(apiMocks.clearTokenRecoveryState).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases only its own recovery-handler registration on cleanup', async () => {
+    storeSession();
+    const view = render(<App />);
+    await waitFor(() => expect(apiMocks.tokenRecoveryHandler).not.toBeNull());
+    const replacement = vi.fn(async () => null);
+
+    apiMocks.tokenRecoveryHandler = replacement;
+    view.unmount();
+
+    expect(apiMocks.tokenRecoveryHandler).toBe(replacement);
   });
 });

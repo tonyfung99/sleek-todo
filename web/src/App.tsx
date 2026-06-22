@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, setUnauthorizedHandler } from './api';
+import {
+  api,
+  clearTokenRecoveryState,
+  setTokenRecoveryHandler,
+  setUnauthorizedHandler,
+} from './api';
 import { AuthScreen } from './AuthScreen';
 import { ListDetail } from './ListDetail';
 import { ListsScreen } from './ListsScreen';
@@ -34,6 +39,7 @@ export function App() {
 
   const handleUnauthorized = useCallback((failedToken: string) => {
     if (authRef.current?.accessToken !== failedToken) return;
+    clearTokenRecoveryState();
     authRef.current = null;
     clearSession();
     setOpenList(null);
@@ -41,9 +47,28 @@ export function App() {
     setAuthNotice('Your session expired. Please log in again.');
   }, []);
 
+  const recoverSession = useCallback(async (failedToken: string): Promise<string | null> => {
+    if (authRef.current?.accessToken !== failedToken) return null;
+    try {
+      const result = await api.refresh();
+      if (authRef.current?.accessToken !== failedToken) return null;
+      authRef.current = result;
+      saveSession(result);
+      setAuth(result);
+      setAuthNotice(null);
+      return result.accessToken;
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     return setUnauthorizedHandler(handleUnauthorized);
   }, [handleUnauthorized]);
+
+  useEffect(() => {
+    return setTokenRecoveryHandler(recoverSession);
+  }, [recoverSession]);
 
   // No stored session? Try to restore one from the httpOnly refresh cookie.
   useEffect(() => {
@@ -53,6 +78,7 @@ export function App() {
       .refresh()
       .then((result) => {
         if (cancelled) return;
+        clearTokenRecoveryState();
         authRef.current = result;
         saveSession(result);
         setAuth(result);
@@ -66,6 +92,7 @@ export function App() {
   }, [auth]);
 
   function handleAuth(result: AuthResult) {
+    clearTokenRecoveryState();
     setAuthNotice(null);
     authRef.current = result;
     saveSession(result);
@@ -78,6 +105,7 @@ export function App() {
     } catch {
       /* ignore network errors on logout */
     }
+    clearTokenRecoveryState();
     setAuthNotice(null);
     authRef.current = null;
     clearSession();
