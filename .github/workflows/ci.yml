@@ -21,3 +21,23 @@ jobs:
       - run: pnpm --filter @sleek-todo/api test
       # Integration tests use Testcontainers; Docker is available on ubuntu-latest runners.
       - run: pnpm --filter @sleek-todo/api test:int
+      - run: pnpm --filter web build
+      - run: pnpm --filter web test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @sleek-todo/api build
+      - run: pnpm --filter web build
+      - run: pnpm --filter web exec playwright install --with-deps chromium
+      # global-setup brings up postgres + redis via docker compose and runs migrations.
+      - run: pnpm --filter web e2e
+        env:
+          CI: 'true'
