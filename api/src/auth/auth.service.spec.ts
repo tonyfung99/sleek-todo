@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 import { AuthService } from './auth.service';
+import { RefreshTokenService } from './refresh-token.service';
 import { User } from '../users/user.entity';
 
 function makeRepoMock() {
@@ -22,12 +23,17 @@ function makeRepoMock() {
 
 describe('AuthService', () => {
   const jwt = new JwtService({ secret: 'test-secret-0123456789', signOptions: { expiresIn: '1d' } });
+  const refreshTokens = {
+    issue: jest.fn(async () => 'raw-refresh-token'),
+    rotate: jest.fn(),
+    revoke: jest.fn(),
+  } as unknown as RefreshTokenService;
   let repo: ReturnType<typeof makeRepoMock>;
   let service: AuthService;
 
   beforeEach(() => {
     repo = makeRepoMock();
-    service = new AuthService(repo, jwt);
+    service = new AuthService(repo, jwt, refreshTokens);
   });
 
   it('register hashes the password and returns a token + user', async () => {

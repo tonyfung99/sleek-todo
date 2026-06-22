@@ -6,9 +6,11 @@ import { CheckIcon, ListIcon, PlusIcon } from './icons';
 export function ListsScreen({
   token,
   onOpen,
+  onLogout,
 }: {
   token: string;
   onOpen: (list: TodoList) => void;
+  onLogout: () => void;
 }) {
   const [lists, setLists] = useState<TodoList[]>([]);
   const [name, setName] = useState('');
@@ -32,11 +34,16 @@ export function ListsScreen({
   return (
     <main className="page">
       <div className="container" style={{ maxWidth: 560 }}>
-        <div className="brand" style={{ marginBottom: 24 }}>
-          <span className="brand-mark">
-            <CheckIcon size={18} />
-          </span>
-          SleekTodo
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 24 }}>
+          <div className="brand">
+            <span className="brand-mark">
+              <CheckIcon size={18} />
+            </span>
+            SleekTodo
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onLogout}>
+            Log out
+          </button>
         </div>
 
         <h1 className="title">My lists</h1>
