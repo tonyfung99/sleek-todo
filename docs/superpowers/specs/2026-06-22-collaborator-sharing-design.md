@@ -64,7 +64,7 @@ No backend schema or endpoint change is required.
 ### Component tests
 
 - The owner sees the sharing form; a non-owner does not.
-- Submitting calls the API with a normalized email and `EDITOR`.
+- Submitting calls the API with a trimmed email and `EDITOR`.
 - Pending submission disables the button and shows progress.
 - Success clears the input and displays confirmation.
 - A missing user displays registration guidance.
