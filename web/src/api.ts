@@ -10,6 +10,56 @@ import {
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
+export type ApiErrorKind =
+  | 'auth'
+  | 'validation'
+  | 'permission'
+  | 'not-found'
+  | 'conflict'
+  | 'network'
+  | 'unexpected';
+
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  readonly status?: number;
+
+  constructor(message: string, kind: ApiErrorKind, status?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+function classifyStatus(status: number): ApiErrorKind {
+  if (status === 401) return 'auth';
+  if (status === 403) return 'permission';
+  if (status === 404) return 'not-found';
+  if (status === 409) return 'conflict';
+  if (status === 400 || status === 422) return 'validation';
+  return 'unexpected';
+}
+
+function fallbackMessage(kind: ApiErrorKind): string {
+  if (kind === 'permission') return "You don't have permission to do that.";
+  if (kind === 'not-found') return 'That item is no longer available.';
+  return 'Something went wrong. Please try again.';
+}
+
+function responseMessage(body: unknown, kind: ApiErrorKind): string {
+  if (kind !== 'unexpected' && typeof body === 'object' && body !== null) {
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim().length > 0) return message;
+  }
+  return fallbackMessage(kind);
+}
+
 async function req<T>(path: string, init: RequestInit, token?: string): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -17,13 +67,31 @@ async function req<T>(path: string, init: RequestInit, token?: string): Promise<
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   // credentials:'include' so the httpOnly refresh cookie round-trips.
-  const res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new ApiError(
+        "Couldn't connect. Check your connection and try again.",
+        'network',
+      );
+    }
+    throw new ApiError('Something went wrong. Please try again.', 'unexpected');
+  }
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw Object.assign(new Error((body as { message?: string }).message ?? res.statusText), {
-      status: res.status,
-    });
+    const kind = classifyStatus(res.status);
+    const error = new ApiError(responseMessage(body, kind), kind, res.status);
+    if (token !== undefined && res.status === 401) {
+      try {
+        unauthorizedHandler?.();
+      } finally {
+        throw error;
+      }
+    }
+    throw error;
   }
   return body as T;
 }
