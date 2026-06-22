@@ -19,6 +19,7 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.worktrees/
 
 # Claude Code personal overrides
 .claude/settings.local.json
