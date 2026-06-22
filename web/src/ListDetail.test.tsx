@@ -78,7 +78,7 @@ describe('ListDetail', () => {
     const email = screen.getByLabelText('Collaborator email') as HTMLInputElement;
 
     fireEvent.change(email, { target: { value: '  bob@example.com  ' } });
-    fireEvent.submit(screen.getByTestId('share-form'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add editor' }));
 
     await waitFor(() => {
       expect(apiMocks.addMember).toHaveBeenCalledWith(
@@ -94,6 +94,39 @@ describe('ListDetail', () => {
     );
   });
 
+  it('reports existing viewer access without claiming edit access', async () => {
+    apiMocks.addMember.mockResolvedValue({
+      id: 'm1',
+      listId: 'l1',
+      userId: 'u2',
+      role: 'VIEWER',
+    });
+    renderDetail();
+
+    fireEvent.change(screen.getByLabelText('Collaborator email'), {
+      target: { value: 'viewer@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add editor' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain(
+        'viewer@example.com already has viewer access',
+      );
+    });
+  });
+
+  it('keeps the submit button disabled for an invalid email', async () => {
+    renderDetail();
+    await screen.findByDisplayValue('Buy milk');
+
+    fireEvent.change(screen.getByLabelText('Collaborator email'), {
+      target: { value: 'not-an-email' },
+    });
+
+    const button = screen.getByRole('button', { name: 'Add editor' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
   it('disables the submit button while adding an editor', async () => {
     apiMocks.addMember.mockReturnValue(new Promise(() => undefined));
     renderDetail();
@@ -102,7 +135,7 @@ describe('ListDetail', () => {
     fireEvent.change(screen.getByLabelText('Collaborator email'), {
       target: { value: 'bob@example.com' },
     });
-    fireEvent.submit(screen.getByTestId('share-form'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add editor' }));
 
     const button = screen.getByRole('button', { name: 'Adding…' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
@@ -117,7 +150,7 @@ describe('ListDetail', () => {
     fireEvent.change(screen.getByLabelText('Collaborator email'), {
       target: { value: 'missing@example.com' },
     });
-    fireEvent.submit(screen.getByTestId('share-form'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add editor' }));
 
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain(

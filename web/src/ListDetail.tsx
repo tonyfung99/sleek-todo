@@ -141,9 +141,13 @@ export function ListDetail({
     setShareError(null);
     setShareSuccess(null);
     try {
-      await api.addMember(token, list.id, email, 'EDITOR');
+      const membership = await api.addMember(token, list.id, email, 'EDITOR');
       setCollaboratorEmail('');
-      setShareSuccess(`${email} can now edit this list.`);
+      setShareSuccess(
+        membership.role === 'VIEWER'
+          ? `${email} already has viewer access.`
+          : `${email} can now edit this list.`,
+      );
     } catch (err) {
       const error = err as Error & { status?: number };
       if (error.status === 404) {

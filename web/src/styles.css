@@ -362,6 +362,18 @@ h2 {
   border-radius: var(--radius);
 }
 
+.share-form .label {
+  color: var(--color-fg);
+}
+
+.share-form .btn-primary {
+  background: var(--color-primary-hover);
+}
+
+.share-form .btn-primary:hover:not(:disabled) {
+  background: var(--color-fg);
+}
+
 .share-field {
   display: grid;
   gap: 6px;
