@@ -284,6 +284,10 @@ export function ListDetail({
               const lock = lockedByOther(todo.id);
               const disabled = Boolean(lock);
               const done = todo.status === 'COMPLETED';
+              // "Blocked" only matters for actionable items — a completed or
+              // archived todo is not waiting on anything.
+              const blockedActive =
+                Boolean(todo.blocked) && todo.status !== 'COMPLETED' && todo.status !== 'ARCHIVED';
               const unmet = (depsByTodo[todo.id] ?? []).filter((d) => d.status !== 'COMPLETED');
               return (
                 <li
@@ -296,11 +300,17 @@ export function ListDetail({
                       type="button"
                       data-testid={`todo-check-${todo.id}`}
                       className={`check check-${todo.priority}${done ? ' checked' : ''}`}
-                      disabled={disabled}
+                      disabled={disabled || blockedActive}
                       onClick={() => toggleComplete(todo)}
                       aria-label={done ? 'Mark as not done' : 'Mark as done'}
                       aria-pressed={done}
-                      title={done ? 'Completed' : 'Mark complete'}
+                      title={
+                        blockedActive
+                          ? 'Complete its dependencies first'
+                          : done
+                            ? 'Completed'
+                            : 'Mark complete'
+                      }
                     >
                       {done && <CheckIcon size={13} />}
                     </button>
@@ -346,7 +356,7 @@ export function ListDetail({
                                 : 'Monthly'}
                           </span>
                         )}
-                        {todo.blocked && (
+                        {blockedActive && (
                           <span className="tag tag-blocked" data-testid={`blocked-${todo.id}`}>
                             Blocked
                             {unmet.length > 0 && ` by ${unmet.map((d) => d.name).join(', ')}`}
@@ -396,7 +406,11 @@ export function ListDetail({
                             aria-label="Status"
                           >
                             {STATUSES.map((s) => (
-                              <option key={s} value={s}>
+                              <option
+                                key={s}
+                                value={s}
+                                disabled={blockedActive && (s === 'COMPLETED' || s === 'IN_PROGRESS')}
+                              >
                                 {STATUS_LABEL[s]}
                               </option>
                             ))}
