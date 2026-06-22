@@ -146,9 +146,10 @@ export function ListsScreen({
           </p>
         )}
         {loadState === 'error' && <ErrorAlert message={loadError} onRetry={loadLists} />}
-        {loadState === 'ready' && lists.length === 0 ? (
+        {loadState === 'ready' && lists.length === 0 && (
           <p className="empty">No lists yet — create your first one above.</p>
-        ) : loadState === 'ready' ? (
+        )}
+        {(loadState === 'ready' || (loadState === 'error' && lists.length > 0)) && (
           <ul className="list-stack">
             {lists.map((l) => (
               <li key={l.id}>
@@ -163,7 +164,7 @@ export function ListsScreen({
               </li>
             ))}
           </ul>
-        ) : null}
+        )}
       </div>
     </main>
   );

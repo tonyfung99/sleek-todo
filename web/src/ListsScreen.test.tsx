@@ -181,6 +181,30 @@ describe('ListsScreen', () => {
     expect(screen.getAllByText('Groceries')).toHaveLength(1);
   });
 
+  it('keeps a created list visible when the concurrent load fails', async () => {
+    const loading = deferredPromise<TodoList[]>();
+    apiMocks.lists.mockReturnValue(loading.promise);
+    apiMocks.createList.mockResolvedValue(groceries);
+    renderScreen();
+
+    const input = screen.getByLabelText('New list name');
+    fireEvent.change(input, { target: { value: 'Groceries' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() => expect(apiMocks.createList).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      loading.reject(new Error("Couldn't refresh your lists."));
+      await loading.promise.catch(() => undefined);
+    });
+
+    expect(screen.getByRole('alert').textContent).toContain(
+      "Couldn't refresh your lists.",
+    );
+    expect(screen.getAllByText('Groceries')).toHaveLength(1);
+    expect(screen.queryByText(/No lists yet/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
   it('ignores an old-token creation and allows the new account to create', async () => {
     const oldCreation = deferredPromise<TodoList>();
     const newCreation = deferredPromise<TodoList>();
